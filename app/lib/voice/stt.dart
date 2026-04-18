@@ -62,6 +62,9 @@ class SpeechToTextService {
 
     _buffer = '';
     _listening = true;
+    // Push-to-talk semantics: the user controls start AND stop. Disable the
+    // plugin's silence-based auto-stop by setting both timers to a generous
+    // ceiling — caller is responsible for invoking stopListening().
     await _speech.listen(
       onResult: (r) {
         _buffer = r.recognizedWords;
@@ -71,9 +74,12 @@ class SpeechToTextService {
         final normalized = ((level + 2) / 12).clamp(0.0, 1.0);
         if (!_levelCtrl.isClosed) _levelCtrl.add(normalized);
       },
+      listenFor: const Duration(minutes: 5),
+      pauseFor: const Duration(minutes: 5),
       listenOptions: stt.SpeechListenOptions(
         partialResults: true,
         cancelOnError: true,
+        listenMode: stt.ListenMode.dictation,
       ),
     );
     // listen() returning doesn't tell us if the AVAudioSession mic dialog
