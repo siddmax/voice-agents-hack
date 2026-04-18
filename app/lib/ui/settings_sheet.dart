@@ -1,54 +1,126 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../agent/agent_loop.dart';
+import '../agent/agent_service.dart';
 import '../mcp/mcp_config.dart';
 import '../mcp/mcp_store.dart';
 import 'app_settings.dart';
+import 'chat_controller.dart';
 
-class SettingsScreen extends StatelessWidget {
-  const SettingsScreen({super.key});
+class SettingsSheet extends StatelessWidget {
+  const SettingsSheet({super.key});
+
+  static Future<void> show(BuildContext context) {
+    return showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      useSafeArea: true,
+      builder: (_) => const FractionallySizedBox(
+        heightFactor: 0.92,
+        child: SettingsSheet(),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
     final settings = context.watch<AppSettings>();
     final store = context.watch<McpServerStore>();
+    final agent = context.read<ChatController>().agent;
 
-    return Scaffold(
-      appBar: AppBar(title: const Text('Settings')),
-      body: ListView(
-        children: [
-          SwitchListTile(
-            title: const Text('Voice output'),
-            subtitle: const Text(
-                'Speak the final response aloud when the agent finishes.'),
-            value: settings.voiceOutput,
-            onChanged: (v) => settings.setVoiceOutput(v),
+    return ListView(
+      padding: const EdgeInsets.only(bottom: 32),
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
+          child: Text(
+            'Settings',
+            style: Theme.of(context).textTheme.headlineSmall,
           ),
-          const Divider(height: 1),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 20, 16, 8),
-            child: Row(
-              children: [
-                Text('MCP servers',
-                    style: Theme.of(context).textTheme.titleMedium),
-                const Spacer(),
-                TextButton.icon(
-                  icon: const Icon(Icons.add),
-                  label: const Text('Add'),
-                  onPressed: () => _openEditor(context),
-                ),
-              ],
-            ),
+        ),
+        SwitchListTile(
+          title: const Text('Voice output'),
+          subtitle: const Text('Speak the final response aloud.'),
+          value: settings.voiceOutput,
+          onChanged: (v) => settings.setVoiceOutput(v),
+        ),
+        const Divider(height: 1),
+        const _ModelStatusRow(),
+        const Divider(height: 1),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 16, 20, 4),
+          child: Row(
+            children: [
+              Text('MCP servers',
+                  style: Theme.of(context).textTheme.titleMedium),
+              const Spacer(),
+              TextButton.icon(
+                icon: const Icon(Icons.add),
+                label: const Text('Add'),
+                onPressed: () => _openEditor(context),
+              ),
+            ],
           ),
-          if (store.servers.isEmpty)
-            const Padding(
-              padding: EdgeInsets.all(24),
-              child: Text('No MCP servers configured.'),
-            ),
-          ...store.servers.map((s) => _ServerTile(server: s)),
-          const SizedBox(height: 32),
-        ],
+        ),
+        if (store.servers.isEmpty)
+          const Padding(
+            padding: EdgeInsets.all(24),
+            child: Text('No MCP servers configured.'),
+          ),
+        ...store.servers.map((s) => _ServerTile(server: s)),
+        const Divider(height: 1),
+        _DebugSection(agent: agent),
+      ],
+    );
+  }
+}
+
+class _ModelStatusRow extends StatelessWidget {
+  const _ModelStatusRow();
+
+  @override
+  Widget build(BuildContext context) {
+    final agent = context.read<ChatController>().agent;
+    final isReal = agent is AgentLoop;
+    return ListTile(
+      leading: Icon(
+        isReal ? Icons.memory : Icons.science_outlined,
+        color: Theme.of(context).colorScheme.primary,
       ),
+      title: Text(isReal ? 'Gemma 4 loaded' : 'Mock agent'),
+      subtitle: Text(
+        isReal
+            ? 'On-device · Cactus runtime'
+            : 'No weights configured — using mock responses.',
+      ),
+    );
+  }
+}
+
+class _DebugSection extends StatelessWidget {
+  final AgentService agent;
+  const _DebugSection({required this.agent});
+
+  @override
+  Widget build(BuildContext context) {
+    final loop = agent is AgentLoop ? agent as AgentLoop : null;
+    return ExpansionTile(
+      leading: const Icon(Icons.bug_report_outlined),
+      title: const Text('Debug'),
+      children: [
+        ListTile(
+          dense: true,
+          title: const Text('Semantic gate triggers'),
+          trailing: Text('${loop?.gateTriggerCount ?? 0}'),
+        ),
+        ListTile(
+          dense: true,
+          title: const Text('Agent type'),
+          trailing: Text(loop == null ? 'mock' : 'real'),
+        ),
+      ],
     );
   }
 }
@@ -60,9 +132,8 @@ class _ServerTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final store = context.read<McpServerStore>();
-    final tokenStatus = (server.bearerToken ?? '').isEmpty
-        ? 'No token set'
-        : 'Token set';
+    final tokenStatus =
+        (server.bearerToken ?? '').isEmpty ? 'No token set' : 'Token set';
     return Dismissible(
       key: ValueKey(server.id),
       direction: DismissDirection.endToStart,

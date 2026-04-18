@@ -11,8 +11,13 @@ class SpeechToTextService {
   bool _initialized = false;
   String _buffer = '';
   bool _listening = false;
+  final StreamController<double> _levelCtrl = StreamController.broadcast();
 
   bool get isListening => _listening;
+
+  /// Stream of sound levels in [0.0, 1.0]. Underlying platform reports dB
+  /// roughly in [-2, 10]; we normalize here so UI can use it directly.
+  Stream<double> get soundLevel => _levelCtrl.stream;
 
   Future<bool> _ensurePermissions() async {
     final mic = await Permission.microphone.request();
@@ -44,6 +49,10 @@ class SpeechToTextService {
       onResult: (r) {
         _buffer = r.recognizedWords;
         if (onPartial != null) onPartial(_buffer);
+      },
+      onSoundLevelChange: (level) {
+        final normalized = ((level + 2) / 12).clamp(0.0, 1.0);
+        if (!_levelCtrl.isClosed) _levelCtrl.add(normalized);
       },
       listenOptions: stt.SpeechListenOptions(
         partialResults: true,
