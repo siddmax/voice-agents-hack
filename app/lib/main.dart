@@ -3,6 +3,8 @@ import 'package:provider/provider.dart';
 
 import 'agent/agent_service.dart';
 import 'agent/mock_agent_service.dart';
+import 'agent/real_agent_factory.dart';
+import 'agent/todos.dart';
 import 'mcp/mcp_store.dart';
 import 'ui/app_settings.dart';
 import 'ui/chat_controller.dart';
@@ -12,13 +14,49 @@ import 'ui/task_ledger.dart';
 import 'voice/stt.dart';
 import 'voice/tts.dart';
 
-void main() {
-  runApp(SyndaiApp(agentFactory: () => MockAgentService()));
+// Provide at build time: --dart-define=SYNDAI_GEMMA4_PATH=/abs/path/to/weights
+const _modelPath = String.fromEnvironment('SYNDAI_GEMMA4_PATH');
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  AgentService? built;
+  String? startupError;
+
+  if (_modelPath.isNotEmpty) {
+    final mcpStore = McpServerStore();
+    await mcpStore.load();
+    try {
+      built = await RealAgentFactory.tryBuild(
+        modelPath: _modelPath,
+        todos: TodoStore(),
+        mcpConfigs: mcpStore.servers,
+      );
+      if (built == null) {
+        startupError = 'Model load returned null — falling back to mock.';
+      }
+    } catch (e) {
+      startupError = 'Model load threw: $e';
+    }
+  } else {
+    startupError =
+        'SYNDAI_GEMMA4_PATH not set. Running mock agent. Pass it via --dart-define when building to run Gemma 4 E4B locally.';
+  }
+
+  runApp(SyndaiApp(
+    agentFactory: () => built ?? MockAgentService(),
+    startupError: startupError,
+  ));
 }
 
 class SyndaiApp extends StatelessWidget {
   final AgentService Function() agentFactory;
-  const SyndaiApp({super.key, required this.agentFactory});
+  final String? startupError;
+  const SyndaiApp({
+    super.key,
+    required this.agentFactory,
+    this.startupError,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -43,14 +81,15 @@ class SyndaiApp extends StatelessWidget {
           ),
           useMaterial3: true,
         ),
-        home: const _HomeShell(),
+        home: _HomeShell(startupError: startupError),
       ),
     );
   }
 }
 
 class _HomeShell extends StatefulWidget {
-  const _HomeShell();
+  final String? startupError;
+  const _HomeShell({this.startupError});
 
   @override
   State<_HomeShell> createState() => _HomeShellState();
@@ -64,6 +103,20 @@ class _HomeShellState extends State<_HomeShell> {
     TaskLedgerScreen(),
     SettingsScreen(),
   ];
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.startupError != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(widget.startupError!),
+          duration: const Duration(seconds: 6),
+        ));
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {

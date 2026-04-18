@@ -8,14 +8,13 @@ import 'prompt_assembler.dart';
 import 'todos.dart';
 import 'tool_registry.dart';
 
-const int _maxSteps = 15;
-
 class AgentLoop implements AgentService {
   final CactusEngine engine;
   final TodoStore todos;
   final Memory memory;
   final ToolRegistry tools;
   final PromptAssembler assembler;
+  final int maxSteps;
 
   final List<Map<String, dynamic>> _history = [];
   final List<String> _recentToolKeys = [];
@@ -28,6 +27,9 @@ class AgentLoop implements AgentService {
     required this.memory,
     required this.tools,
     required this.assembler,
+    // Lane A's 20-step eval showed Gemma 4 E4B INT4 degrades past ~turn 11
+    // without set_tool_constraints. 10 leaves headroom for the plan phase.
+    this.maxSteps = 10,
   }) {
     _registerCoreTools();
   }
@@ -142,7 +144,7 @@ class AgentLoop implements AgentService {
       }
     }
 
-    for (var step = 0; step < _maxSteps; step++) {
+    for (var step = 0; step < maxSteps; step++) {
       if (_cancelled) return;
 
       if (todos.allDone) {
