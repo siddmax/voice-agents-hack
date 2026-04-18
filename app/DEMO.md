@@ -175,13 +175,42 @@ system message, last 3 messages, anything newer than the most recent
 carried into the synthetic summary. Measured: 2359 → 1195 tokens on
 first firing in the integration test.
 
+## Output processor + semantic gate (ported from LocalHost Router)
+
+Every tool-call output passes through an `OutputProcessor` pipeline before the
+agent loop ever executes it:
+
+- **Depth-tracking JSON extractor** — pulls the first complete JSON object out
+  of trailing prose, code fences, or nested braces.
+- **Levenshtein fuzzy tool-name match** (≤ 4 edits) — `plat_music` → `play_music`.
+- **Type coercion** — float→int on integer schema fields, `.abs()` on negatives
+  where the schema has `minimum: 0`, enum snap via Levenshtein ≤ 3.
+- **String arg cleanup** — strip trailing punctuation, leading `the|a|an`,
+  surrounding quotes.
+- **Schema-generic NLP extraction** — regex pulls `"6 AM"` → `{hour: 6, minute: 0}`,
+  `"10 minutes"` → `{minutes: 10}`, `"2 hours"` → `{hours: 2}` from the user
+  query when the schema has matching int fields and the model filled garbage.
+- **Refusal detection** — phrases like `"I cannot"`, `"I apologize"`, `"which song"`
+  short-circuit retries instead of burning them.
+
+Before the tool actually runs, the `SemanticGate` checks whether the model's
+selected tool has at least one keyword in the user query. If not AND a different
+available tool does, the call is killed and a reminder is injected so the loop
+replans. Core tools (`write_todos`, `finish`, etc.) and `memory_*` are exempt.
+
+Patterns adapted from [Rayhanpatel/functiongemma-hackathon](https://github.com/Rayhanpatel/functiongemma-hackathon)
+(Cactus × DeepMind Feb 2026 hackathon, 80.9% objective score).
+
 ## Tuning knobs
 
 - `AgentLoop(maxSteps: N)` — default 10 (Gemma 4 E4B INT4 degrades
   past ~turn 11 without `set_tool_constraints`).
+- `AgentLoop(semanticGate: SemanticGate(yourSignals))` — merge your own
+  tool→keyword mappings into the default map.
 - `MessageListCompactor(thresholdTokens: N, targetTokens: M)` —
   defaults 8000 / 4000.
 - `completeJson(retries: N)` — default 3.
+- `--dart-define=SYNDAI_MODEL_TIER=e2b|e4b` — override auto RAM detection.
 
 ## Known gaps
 
