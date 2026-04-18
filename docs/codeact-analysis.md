@@ -1,0 +1,38 @@
+# CodeAct vs JSON tools on Gemma 4 E4B — Syndai analysis
+
+## Verdict
+
+**DON'T**
+
+- The only published CodeAct gains we can cite are on 7B-and-up models fine-tuned specifically for code-action output; nothing in the literature says the pattern survives at 4B INT4 with a generalist instruction-tuned model like Gemma 4 E4B.
+- Counter-reason: Python as action space is strictly more expressive than our JSON schema, so *if* Gemma could emit valid Python, it would in principle paper over some of the multi-turn schema drift Lane A measured.
+- What would change my mind: a measured eval showing Gemma 4 E4B INT4 emits executable Python past turn ~15 at higher rates than it emits clean tool-call JSON past turn ~11, on a Syndai-representative trace. Absent that, build is speculative.
+
+## Evidence summary
+
+Wang et al.'s "Executable Code Actions Elicit Better LLM Agents" ([arXiv 2402.01030](https://arxiv.org/abs/2402.01030)) is the load-bearing paper. They report up to a 20% success-rate lift over text/JSON action formats across 17 LLMs on API-Bank and their M3ToolEval benchmark, and ship two [CodeActAgent checkpoints](https://github.com/xingyaoww/code-act) — Mistral-7B and Llama-2-7B — both of which were *fine-tuned on their 7k-trajectory CodeActInstruct dataset* before the gains show up. The smallest evaluated model is 7B, and the gains are reported on instruction-tuned-for-CodeAct weights, not a generalist base model. There is no 4B-class CodeAct result in the literature I can find. The [Berkeley Function Calling Leaderboard](https://gorilla.cs.berkeley.edu/leaderboard.html) ranks small models (MiniCPM3-4B, Gemma-3-4B, xLAM-7B, Llama-3-8B) on JSON/AST-based function calling but does not carry a CodeAct track, so we cannot cross-check the pattern on a neutral benchmark. Net: the published evidence is 7B+ and fine-tune-conditioned; extrapolating it to a 4B INT4 generalist is a guess, not a forecast.
+
+Cost to build inside this codebase is non-trivial. The `serious_python` package is at [0.9.11](https://pub.dev/packages/serious_python) and ships a full CPython 3.12.6 runtime per platform. The package README offers no sandbox and no stdlib subsetting — it explicitly frames Flutter/Python interaction as IPC over sockets, files, or SQLite, not as a restricted call interface. That means introducing it gives the agent (and, transitively, any prompt-injection vector reaching our on-device model) unrestricted filesystem and network access under the app's entitlements. Bundle impact the package itself doesn't publish, but a bundled CPython 3.12 + stdlib is conventionally in the 20–50 MB range per architecture slice, which is a meaningful hit for a voice agent app and will draw iOS review attention for interpreted-code shipping (Guideline 2.5.2 / 4.7 territory).
+
+On our Cactus FFI stack we do not currently expose GBNF or any grammar-constrained decoding, which is the single biggest structural reason to be skeptical. Lane A's 20-step trace shows Gemma 4 E4B INT4 holds clean tool-call JSON for roughly 11 turns before parse failures and loops set in. The JSON surface is small and highly regular — a handful of keys, enumerable tool names, constrained argument shapes — and the model still drifts. Python's valid surface is vastly larger: arbitrary identifiers, arbitrary call graphs, indentation semantics, string-escape landmines, and no schema to snap back to. From first principles, widening the output grammar on a model that is already failing on the narrower grammar should make things worse, not better — the drift modes (hallucinated tool names, malformed args) become hallucinated function names, bad indentation, and runtime tracebacks the model then has to reason about. The CodeAct paper's gains ride on fine-tuned 7B weights and, implicitly, on the model's ability to self-correct from interpreter errors; at 4B INT4 without grammar constraints, the self-correction loop is exactly the capability Lane A measured as degrading past turn 11.
+
+The two Claude Code reimplementations the user linked — [Austin1serb/anthropic-leaked-source-code](https://github.com/Austin1serb/anthropic-leaked-source-code) and [yasasbanukaofficial/claude-code](https://github.com/yasasbanukaofficial/claude-code/tree/main/src/tools) — both expose discrete JSON tools (Bash, FileRead, FileEdit, Grep, Glob, WebFetch, Notebook, REPL, LSP, etc.) rather than a unified `python_exec` CodeAct surface. Anthropic's own product, by all indications, uses the same pattern: shell execution is *a* tool, not *the* tool. Anthropic has the ML budget to train CodeAct-style weights internally and chose not to. The Memory Tool pattern Track 1 is already building is their stated direction — discrete, typed, auditable tool calls with externalized state — and the reason is likely the same one that bites us harder at 4B: JSON tools are inspectable, reject-early, and compose with guardrails; Python is inspectable only after execution and composes with nothing.
+
+## What building it would cost
+
+Bundle: add `serious_python` (~20–50 MB per arch slice, unconfirmed — I could not find a published number on pub.dev). Sandbox: none ships; we'd have to roll our own by patching `sys.modules` and stubbing `os`, `subprocess`, `socket`, which is a known-incomplete escape-hatch approach. Tool surface: adding `python_exec(code) -> {stdout, stderr, value}` alongside existing JSON tools means the model has to *choose* between two action spaces per turn, which is strictly harder than either one alone; the CodeAct paper's framing is that Python subsumes tools (you `import tool` rather than emit JSON), which would require rewriting every Syndai tool as a Python-callable. Timeline estimate: ~8–12 CC hours for the FFI and tool wrapper, ~6–10 gstack hours for the sandbox patching and iOS build config, plus an eval harness we don't have yet. Not shippable inside the hackathon window without cutting the sandbox, which is not acceptable on-device.
+
+## What the failure modes look like at 4B
+
+Expected regressions, ordered by likelihood: (1) syntactically invalid Python — unbalanced quotes, bad indentation, truncated function bodies — at rates higher than the current JSON parse-failure rate, because the grammar is larger and we have no GBNF backstop; (2) hallucinated API surface — the model invents `syndai.memory.recall()` or similar because code-shaped context leaks from pretraining; (3) error-recovery collapse — the interpreter returns a traceback, the model is asked to fix it, and the fix is another traceback, eating the turn budget Lane A already measured as 11 usable turns; (4) silent wrong answers — Python returns a value that *looks* right but is computed from a wrong attribute access, with no schema to catch it. JSON tools fail loudly; CodeAct fails quietly.
+
+Claim I'm uncertain about: the exact `serious_python` bundle-size figure. I cited the 20–50 MB industry range; pub.dev does not publish a measured number and I did not build a test APK to confirm.
+
+## References
+
+- [Wang et al. 2024, "Executable Code Actions Elicit Better LLM Agents" (arXiv 2402.01030)](https://arxiv.org/abs/2402.01030)
+- [CodeActAgent GitHub (xingyaoww/code-act)](https://github.com/xingyaoww/code-act)
+- [serious_python on pub.dev (v0.9.11)](https://pub.dev/packages/serious_python)
+- [Berkeley Function Calling Leaderboard](https://gorilla.cs.berkeley.edu/leaderboard.html)
+- [anthropic-leaked-source-code (Austin1serb)](https://github.com/Austin1serb/anthropic-leaked-source-code)
+- [claude-code reimplementation (yasasbanukaofficial)](https://github.com/yasasbanukaofficial/claude-code/tree/main/src)
