@@ -26,17 +26,95 @@ The app has two modes:
 
 ```bash
 export CACTUS_DYLIB_PATH=/Users/sidsharma/CactusHackathon/cactus/cactus/build/libcactus.dylib
-export SYNDAI_GEMMA4_PATH=/Users/sidsharma/CactusHackathon/cactus/weights/gemma-4-e4b-it
+export SYNDAI_GEMMA4_E2B_PATH=/Users/sidsharma/CactusHackathon/cactus/weights/gemma-4-e2b-it
+export SYNDAI_GEMMA4_E4B_PATH=/Users/sidsharma/CactusHackathon/cactus/weights/gemma-4-e4b-it
 ```
 
 `CACTUS_DYLIB_PATH` is read at runtime by Dart (`Platform.environment`).
-`SYNDAI_GEMMA4_PATH` is passed at **compile time** via `--dart-define` — see below.
+The `SYNDAI_GEMMA4_*_PATH` vars are passed at **compile time** via
+`--dart-define` — see below. The app auto-picks E2B vs. E4B based on the
+device's detected RAM; see the [Model tier matrix](#model-tier-matrix).
 
-## Run with the real model
+`SYNDAI_GEMMA4_PATH` (singular, legacy) is still accepted as an alias for
+the E4B path so existing scripts keep working.
+
+## Run with the real model (macOS)
 
 ```bash
-flutter run -d macos --dart-define=SYNDAI_GEMMA4_PATH=$SYNDAI_GEMMA4_PATH
+flutter run -d macos \
+  --dart-define=SYNDAI_GEMMA4_E2B_PATH=$SYNDAI_GEMMA4_E2B_PATH \
+  --dart-define=SYNDAI_GEMMA4_E4B_PATH=$SYNDAI_GEMMA4_E4B_PATH
 ```
+
+To force a specific tier for testing:
+
+```bash
+flutter run -d macos \
+  --dart-define=SYNDAI_GEMMA4_E2B_PATH=$SYNDAI_GEMMA4_E2B_PATH \
+  --dart-define=SYNDAI_GEMMA4_E4B_PATH=$SYNDAI_GEMMA4_E4B_PATH \
+  --dart-define=SYNDAI_MODEL_TIER=e2b
+```
+
+## Build for iOS (device)
+
+```bash
+# From app/
+flutter build ios --release \
+  --dart-define=SYNDAI_GEMMA4_E2B_PATH=$SYNDAI_GEMMA4_E2B_PATH \
+  --dart-define=SYNDAI_GEMMA4_E4B_PATH=$SYNDAI_GEMMA4_E4B_PATH
+# Open ios/Runner.xcworkspace in Xcode, sign with your team, run on device.
+```
+
+## Build for Android
+
+Cactus for Android must be built first — Syndai expects `libcactus.so` under
+`app/android/app/src/main/jniLibs/<abi>/`.
+
+```bash
+# 1. Build the Android shared lib.
+cd /Users/sidsharma/CactusHackathon/cactus
+source ./setup
+cactus build --android
+
+# 2. Copy the produced .so into the app's jniLibs dir (arm64-v8a for modern phones).
+mkdir -p /Users/sidsharma/CactusHackathon/voice-agents-hack/app/android/app/src/main/jniLibs/arm64-v8a
+cp <cactus-android-build-output>/libcactus.so \
+   /Users/sidsharma/CactusHackathon/voice-agents-hack/app/android/app/src/main/jniLibs/arm64-v8a/
+
+# 3. Build the APK. Model weights must already be on the device (e.g. via
+#    `adb push` into a world-readable location like /data/local/tmp/).
+cd /Users/sidsharma/CactusHackathon/voice-agents-hack/app
+flutter build apk --release \
+  --dart-define=SYNDAI_GEMMA4_E2B_PATH=/data/local/tmp/gemma4-e2b \
+  --dart-define=SYNDAI_GEMMA4_E4B_PATH=/data/local/tmp/gemma4-e4b
+```
+
+> Note: `flutter build apk --debug` currently links and produces an APK even
+> without `libcactus.so` in place; loading the model at runtime will fail with
+> a "libcactus.so not found" FFI error, and the app will fall back to the mock
+> agent with a snackbar. Ship the `.so` before demoing.
+
+## Model tier matrix
+
+| Device RAM | Tier  | Model                              |
+|------------|-------|------------------------------------|
+| ≥ 12 GB    | `e4b` | `google/gemma-4-E4B-it` INT4 (~4B) |
+| 4–11 GB    | `e2b` | `google/gemma-4-E2B-it` INT4 (~2B) |
+| Unknown    | `e2b` | Safer default                      |
+
+Override auto-detection with:
+
+```bash
+--dart-define=SYNDAI_MODEL_TIER=e2b   # or e4b
+```
+
+Detection uses `device_info_plus`:
+
+- **Android** → `ActivityManager.MemoryInfo.totalMem`
+- **iOS**     → `NSProcessInfo.physicalMemory`
+- **macOS**   → `sysctl hw.memsize`
+
+If RAM can't be read, the app defaults to E2B.
 
 First launch blocks for ~30 s while the model loads. If the path is wrong or
 the dylib can't be found, the app falls back to mock mode and shows a snackbar

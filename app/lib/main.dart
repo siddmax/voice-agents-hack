@@ -5,6 +5,7 @@ import 'agent/agent_service.dart';
 import 'agent/mock_agent_service.dart';
 import 'agent/real_agent_factory.dart';
 import 'agent/todos.dart';
+import 'cactus/model_tier.dart';
 import 'mcp/mcp_store.dart';
 import 'ui/app_settings.dart';
 import 'ui/chat_controller.dart';
@@ -14,8 +15,14 @@ import 'ui/task_ledger.dart';
 import 'voice/stt.dart';
 import 'voice/tts.dart';
 
-// Provide at build time: --dart-define=SYNDAI_GEMMA4_PATH=/abs/path/to/weights
-const _modelPath = String.fromEnvironment('SYNDAI_GEMMA4_PATH');
+// Tier-specific weights. Supply both at build time when you want the app to
+// auto-pick based on device RAM (see [ModelTierDetector]):
+//   --dart-define=SYNDAI_GEMMA4_E2B_PATH=/abs/path/to/e2b-weights
+//   --dart-define=SYNDAI_GEMMA4_E4B_PATH=/abs/path/to/e4b-weights
+// Legacy single-path alias is treated as an E4B weights path.
+const _e2bPath = String.fromEnvironment('SYNDAI_GEMMA4_E2B_PATH');
+const _e4bPath = String.fromEnvironment('SYNDAI_GEMMA4_E4B_PATH');
+const _legacyPath = String.fromEnvironment('SYNDAI_GEMMA4_PATH');
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -23,12 +30,15 @@ Future<void> main() async {
   AgentService? built;
   String? startupError;
 
-  if (_modelPath.isNotEmpty) {
+  final tier = await ModelTierDetector.detect();
+  final resolvedPath = _resolveModelPath(tier);
+
+  if (resolvedPath != null) {
     final mcpStore = McpServerStore();
     await mcpStore.load();
     try {
       built = await RealAgentFactory.tryBuild(
-        modelPath: _modelPath,
+        modelPath: resolvedPath,
         todos: TodoStore(),
         mcpConfigs: mcpStore.servers,
       );
@@ -40,13 +50,37 @@ Future<void> main() async {
     }
   } else {
     startupError =
-        'SYNDAI_GEMMA4_PATH not set. Running mock agent. Pass it via --dart-define when building to run Gemma 4 E4B locally.';
+        'No Gemma 4 weights configured. Running mock agent. Detected tier: '
+        '${tier.name}. Pass --dart-define=SYNDAI_GEMMA4_E2B_PATH=... and/or '
+        '--dart-define=SYNDAI_GEMMA4_E4B_PATH=... when building.';
   }
 
   runApp(SyndaiApp(
     agentFactory: () => built ?? MockAgentService(),
     startupError: startupError,
   ));
+}
+
+/// Resolve the weights path for the given [tier].
+///
+/// Priority order:
+///   1. The path matching [tier] (E4B → `SYNDAI_GEMMA4_E4B_PATH`, E2B → `SYNDAI_GEMMA4_E2B_PATH`).
+///   2. Legacy `SYNDAI_GEMMA4_PATH` (historically E4B-only).
+///   3. The other tier's path, as a last resort.
+///   4. `null` if nothing is configured → caller falls back to the mock agent.
+String? _resolveModelPath(ModelTier tier) {
+  String? nonEmpty(String s) => s.isEmpty ? null : s;
+
+  final preferred =
+      tier == ModelTier.e4b ? nonEmpty(_e4bPath) : nonEmpty(_e2bPath);
+  if (preferred != null) return preferred;
+
+  final legacy = nonEmpty(_legacyPath);
+  if (legacy != null) return legacy;
+
+  final other =
+      tier == ModelTier.e4b ? nonEmpty(_e2bPath) : nonEmpty(_e4bPath);
+  return other;
 }
 
 class SyndaiApp extends StatelessWidget {
