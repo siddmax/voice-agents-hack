@@ -43,6 +43,8 @@ dependencies:
   shared_preferences: ^2.5.5
   provider: ^6.1.5+1
   device_info_plus: ^11.0.0
+  http: ^1.2.0
+  archive: ^3.6.1
 
 dev_dependencies:
   flutter_test:

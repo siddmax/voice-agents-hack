@@ -1,15 +1,20 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 
 import 'agent/agent_service.dart';
 import 'agent/mock_agent_service.dart';
 import 'agent/real_agent_factory.dart';
 import 'agent/todos.dart';
+import 'cactus/model_downloader.dart';
 import 'cactus/model_tier.dart';
 import 'mcp/mcp_store.dart';
 import 'ui/app_settings.dart';
 import 'ui/chat_controller.dart';
 import 'ui/chat_screen.dart';
+import 'ui/model_download_screen.dart';
 import 'ui/settings_screen.dart';
 import 'ui/task_ledger.dart';
 import 'voice/stt.dart';
@@ -27,11 +32,28 @@ const _legacyPath = String.fromEnvironment('SYNDAI_GEMMA4_PATH');
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
+  final tier = await ModelTierDetector.detect();
+
+  // Prefer dart-define overrides (desktop dev), else the on-device download
+  // location. If neither is present we boot to [ModelDownloadScreen] and let
+  // the user grab the weights.
+  final overridePath = _legacyOverridePath(tier);
+  Directory? docsDir;
+  String? existingPath;
+  try {
+    docsDir = await getApplicationDocumentsDirectory();
+    existingPath = await ModelDownloader.existingModelPath(
+      tier: tier,
+      destination: docsDir,
+    );
+  } catch (_) {
+    // Tests / headless environments may not have path_provider wired up.
+  }
+
+  final resolvedPath = overridePath ?? existingPath;
+
   AgentService? built;
   String? startupError;
-
-  final tier = await ModelTierDetector.detect();
-  final resolvedPath = _resolveModelPath(tier);
 
   if (resolvedPath != null) {
     final mcpStore = McpServerStore();
@@ -48,27 +70,29 @@ Future<void> main() async {
     } catch (e) {
       startupError = 'Model load threw: $e';
     }
-  } else {
-    startupError =
-        'No Gemma 4 weights configured. Running mock agent. Detected tier: '
-        '${tier.name}. Pass --dart-define=SYNDAI_GEMMA4_E2B_PATH=... and/or '
-        '--dart-define=SYNDAI_GEMMA4_E4B_PATH=... when building.';
   }
 
   runApp(SyndaiApp(
     agentFactory: () => built ?? MockAgentService(),
     startupError: startupError,
+    initialModelPath: resolvedPath,
+    tier: tier,
+    documentsDir: docsDir,
   ));
 }
 
-/// Resolve the weights path for the given [tier].
+/// Resolve a developer-supplied override for [tier] from `--dart-define`.
+///
+/// Mobile users go through [ModelDownloadScreen] — this path is for desktop
+/// devs who want to point at a pre-existing weights directory.
 ///
 /// Priority order:
 ///   1. The path matching [tier] (E4B → `SYNDAI_GEMMA4_E4B_PATH`, E2B → `SYNDAI_GEMMA4_E2B_PATH`).
 ///   2. Legacy `SYNDAI_GEMMA4_PATH` (historically E4B-only).
 ///   3. The other tier's path, as a last resort.
-///   4. `null` if nothing is configured → caller falls back to the mock agent.
-String? _resolveModelPath(ModelTier tier) {
+///   4. `null` if nothing is configured → caller falls through to the
+///      on-device download check.
+String? _legacyOverridePath(ModelTier tier) {
   String? nonEmpty(String s) => s.isEmpty ? null : s;
 
   final preferred =
@@ -86,10 +110,19 @@ String? _resolveModelPath(ModelTier tier) {
 class SyndaiApp extends StatelessWidget {
   final AgentService Function() agentFactory;
   final String? startupError;
+
+  /// Path to on-device weights (null → app boots to [ModelDownloadScreen]).
+  final String? initialModelPath;
+  final ModelTier tier;
+  final Directory? documentsDir;
+
   const SyndaiApp({
     super.key,
     required this.agentFactory,
     this.startupError,
+    this.initialModelPath,
+    this.tier = ModelTier.e2b,
+    this.documentsDir,
   });
 
   @override
@@ -115,7 +148,17 @@ class SyndaiApp extends StatelessWidget {
           ),
           useMaterial3: true,
         ),
-        home: _HomeShell(startupError: startupError),
+        home: initialModelPath == null && documentsDir != null
+            ? ModelDownloadScreen(
+                tier: tier,
+                destination: documentsDir!,
+                onReady: (_) {
+                  // Integration hook: when Track J lands JarvisScreen, wire
+                  // it here via a navigator push that rebuilds the agent.
+                  // For now the screen itself shows a "Model ready" state.
+                },
+              )
+            : _HomeShell(startupError: startupError),
       ),
     );
   }
