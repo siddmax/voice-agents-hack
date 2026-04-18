@@ -49,7 +49,7 @@ EXTERNAL SOURCES:
     :path: ".symlinks/plugins/speech_to_text/darwin"
 
 SPEC CHECKSUMS:
-  cactus: 7f2871dbcb3fa171081ade6ba7ebe2a5550b25fa
+  cactus: 5509b7440183ae6455d072f58eb686da02e5f996
   CwlCatchException: 7acc161b299a6de7f0a46a6ed741eae2c8b4d75a
   CwlCatchExceptionSupport: 54ccab8d8c78907b57f99717fb19d4cc3bce02dc
   device_info_plus: 21fcca2080fbcd348be798aa36c3e5ed849eefbe

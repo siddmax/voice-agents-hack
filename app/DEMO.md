@@ -6,6 +6,41 @@
 - Android 16+ (API 36, ~Pixel 6+)
 - macOS 11.0+ (developer build only)
 
+## iOS simulator (the easy path)
+
+```bash
+# 1. One-time: build the cactus xcframework + extract the simulator slice.
+cd /Users/sidsharma/CactusHackathon/cactus
+git fetch --tags && git checkout v1.14
+source ./setup
+bash flutter/build.sh                    # produces flutter/cactus-ios.xcframework
+
+# 2. Install the simulator slice into the Flutter app.
+mkdir -p /Users/sidsharma/CactusHackathon/voice-agents-hack/app/ios/Frameworks
+cp -R flutter/cactus-ios.xcframework \
+      /Users/sidsharma/CactusHackathon/voice-agents-hack/app/ios/Frameworks/cactus.xcframework
+cp -R /Users/sidsharma/CactusHackathon/voice-agents-hack/app/ios/Frameworks/cactus.xcframework/ios-arm64-simulator/cactus.framework \
+      /Users/sidsharma/CactusHackathon/voice-agents-hack/app/ios/Frameworks/cactus.framework
+
+# 3. Boot an iOS 26 simulator and run.
+xcrun simctl boot "iPhone 17 Pro"
+cd /Users/sidsharma/CactusHackathon/voice-agents-hack/app
+flutter build ios --simulator
+xcrun simctl install booted build/ios/iphonesimulator/Runner.app
+xcrun simctl launch booted com.siddmax.syndai.syndai
+```
+
+On first launch the app reads device RAM (the sim reports the host Mac's
+RAM, so you'll get E4B on a 16+ GB machine), picks the matching tier, and
+downloads ~2.5 GB (E2B) or ~6 GB (E4B) from HuggingFace into the app
+documents directory. Force E2B with `--dart-define=SYNDAI_MODEL_TIER=e2b`.
+
+**Vendoring note.** We ship `cactus.framework` (sim slice) directly because
+Flutter's `BUILD_DIR` override interacts badly with CocoaPods'
+"Copy XCFrameworks" phase — the linker can't find the framework even though
+the script wrote it to disk. Vendoring the resolved slice sidesteps the bug.
+For physical-device builds, copy `ios-arm64/cactus.framework` instead.
+
 If `flutter build apk` fails because your Android SDK doesn't have API 36
 platforms installed, run:
 

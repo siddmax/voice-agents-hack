@@ -6,3 +6,8 @@ app/android/local.properties
 # Cactus vendored xcframework (user-built via cactus/flutter/build.sh)
 app/ios/Frameworks/
 
+
+# iOS build intermediates
+app/ios/build/
+app/ios/.symlinks/
+app/ios/Pods/
