@@ -46,6 +46,7 @@ class _ScriptedEngine implements CactusEngine {
     int retries = 3,
     int maxTokens = 512,
     double temperature = 0.2,
+    String? query,
   }) async =>
       {};
 

@@ -34,6 +34,7 @@ class FakeCactusEngine implements CactusEngine {
     int retries = 3,
     int maxTokens = 512,
     double temperature = 0.2,
+    String? query,
   }) async {
     if (_i >= jsonResponses.length) {
       throw StateError('FakeCactusEngine ran out of scripted responses');
