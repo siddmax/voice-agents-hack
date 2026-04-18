@@ -30,6 +30,19 @@ class ChatController extends ChangeNotifier {
   final List<ChatMessage> messages = [];
   List<TodoItem> todos = const [];
 
+  /// Raw ordered event stream for the current session. New consumers (Jarvis)
+  /// render directly from this; legacy [messages] rendering remains for the
+  /// old chat screen (now deleted but tests may still exercise the shape).
+  final List<AgentEvent> events = [];
+
+  void clearSession() {
+    messages.clear();
+    events.clear();
+    todos = const [];
+    _lastFinishedSummary = null;
+    notifyListeners();
+  }
+
   StreamSubscription<AgentEvent>? _sub;
   bool _running = false;
   String? _lastFinishedSummary;
@@ -51,6 +64,7 @@ class ChatController extends ChangeNotifier {
     notifyListeners();
 
     _sub = agent.run(trimmed).listen((evt) {
+      events.add(evt);
       switch (evt) {
         case AgentToken(:final text):
           if (agentMsg.parts.isNotEmpty && agentMsg.parts.last is String) {
