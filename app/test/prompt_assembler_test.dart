@@ -5,8 +5,8 @@ import 'package:syndai/agent/todos.dart';
 
 void main() {
   group('PromptAssembler', () {
-    test('truncates memory above 2000 tokens', () {
-      final huge = 'x' * (2000 * 4 + 4000); // well over 2000 tokens
+    test('truncates memory above 1500 tokens', () {
+      final huge = 'x' * (1500 * 4 + 4000); // well over 1500 tokens
       final todos = TodoStore();
       final store = ToolResultStore();
       final pa = PromptAssembler(
