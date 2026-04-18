@@ -7,7 +7,7 @@ Pod::Spec.new do |s|
   s.license          = { :type => 'Apache-2.0' }
   s.author           = { 'Cactus Compute' => 'hello@cactuscompute.com' }
   s.source           = { :path => '.' }
-  s.platform         = :ios, '13.0'
+  s.platform         = :ios, '26.0'
   s.vendored_frameworks = 'Frameworks/cactus-ios.xcframework'
   s.pod_target_xcconfig = {
     'DEFINES_MODULE' => 'YES',
