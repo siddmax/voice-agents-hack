@@ -7,8 +7,17 @@ import 'compaction.dart';
 import 'memory.dart';
 import 'memory_tools.dart';
 import 'prompt_assembler.dart';
+import 'semantic_gate.dart';
 import 'todos.dart';
 import 'tool_registry.dart';
+
+const _gateSkipTools = {
+  'write_todos',
+  'read_tool_result',
+  'finish',
+  'request_user_input',
+};
+final _memoryToolPattern = RegExp(r'^memory_');
 
 class AgentLoop implements AgentService {
   final CactusEngine engine;
@@ -18,11 +27,13 @@ class AgentLoop implements AgentService {
   final PromptAssembler assembler;
   final MessageListCompactor? compactor;
   final int maxSteps;
+  final SemanticGate _semanticGate;
 
   List<Map<String, dynamic>> _history = [];
   final List<String> _recentToolKeys = [];
   bool _cancelled = false;
   int _stepsSinceReminder = 0;
+  String _latestUserInput = '';
 
   AgentLoop({
     required this.engine,
@@ -31,10 +42,11 @@ class AgentLoop implements AgentService {
     required this.tools,
     required this.assembler,
     this.compactor,
+    SemanticGate? semanticGate,
     // Lane A's 20-step eval showed Gemma 4 E4B INT4 degrades past ~turn 11
     // without set_tool_constraints. 10 leaves headroom for the plan phase.
     this.maxSteps = 10,
-  }) {
+  }) : _semanticGate = semanticGate ?? SemanticGate() {
     _registerCoreTools();
     registerMemoryTools(tools, memory);
   }
@@ -134,9 +146,12 @@ class AgentLoop implements AgentService {
     _cancelled = true;
   }
 
+  int get gateTriggerCount => _semanticGate.triggerCount;
+
   @override
   Stream<AgentEvent> run(String userInput) async* {
     _cancelled = false;
+    _latestUserInput = userInput;
     final bool isNewGoal = _history.isEmpty || _looksLikeNewGoal(userInput);
     _history.add({'role': 'user', 'content': userInput});
 
@@ -190,6 +205,23 @@ class AgentLoop implements AgentService {
         });
         _recentToolKeys.clear();
         continue;
+      }
+
+      if (!_gateSkipTools.contains(name) &&
+          !_memoryToolPattern.hasMatch(name)) {
+        final availableToolNames = tools.all.map((t) => t.name).toList();
+        if (!_semanticGate.check(
+          toolName: name,
+          query: _latestUserInput,
+          availableTools: availableToolNames,
+        )) {
+          _history.add({
+            'role': 'system',
+            'content':
+                '[semantic-gate] "$name" does not seem to match the query. Pick a different tool or call finish.',
+          });
+          continue;
+        }
       }
 
       yield AgentToolCall(name, args);
