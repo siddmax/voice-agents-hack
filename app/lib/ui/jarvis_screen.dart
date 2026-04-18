@@ -72,11 +72,24 @@ class _JarvisScreenState extends State<JarvisScreen> {
     super.dispose();
   }
 
+  String _hintForState(bool running, OrbState orb) {
+    if (running) return 'Tap to cancel';
+    if (orb == OrbState.listening) return 'Tap to send';
+    return 'Tap to talk';
+  }
+
   Future<void> _onTap() async {
     final stt = context.read<SpeechToTextService>();
     final chat = context.read<ChatController>();
 
-    if (chat.running) return;
+    // Tap during a run cancels the agent and resets the orb so the user can
+    // start a new turn immediately.
+    if (chat.running) {
+      await chat.cancel();
+      if (!mounted) return;
+      setState(() => _orb = OrbState.idle);
+      return;
+    }
 
     if (_orb == OrbState.listening) {
       final text = await stt.stopListening();
@@ -130,10 +143,25 @@ class _JarvisScreenState extends State<JarvisScreen> {
                     behavior: HitTestBehavior.opaque,
                     onTap: _onTap,
                     child: Center(
-                      child: JarvisOrb(
-                        state: _orb,
-                        amplitude: _amplitude,
-                        size: media.size.width * 0.6,
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          JarvisOrb(
+                            state: _orb,
+                            amplitude: _amplitude,
+                            size: media.size.width * 0.6,
+                          ),
+                          const SizedBox(height: 16),
+                          Text(
+                            _hintForState(chat.running, _orb),
+                            style: Theme.of(context)
+                                .textTheme
+                                .bodySmall
+                                ?.copyWith(
+                                    color:
+                                        Theme.of(context).colorScheme.outline),
+                          ),
+                        ],
                       ),
                     ),
                   ),

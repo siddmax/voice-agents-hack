@@ -104,6 +104,15 @@ class ChatController extends ChangeNotifier {
     });
   }
 
+  Future<void> cancel() async {
+    if (!_running) return;
+    await _sub?.cancel();
+    _sub = null;
+    await agent.cancel();
+    _running = false;
+    notifyListeners();
+  }
+
   @override
   Future<void> dispose() async {
     await _sub?.cancel();
