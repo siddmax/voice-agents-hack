@@ -87,6 +87,9 @@ class ChatController extends ChangeNotifier {
           }
         case AgentTodoUpdate(:final todos):
           this.todos = todos;
+        case AgentThinking():
+          // Transient — UI renders from the events list; no controller state.
+          break;
         case AgentFinished(:final summary):
           _lastFinishedSummary = summary;
       }

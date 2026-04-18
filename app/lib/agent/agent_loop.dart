@@ -158,6 +158,7 @@ class AgentLoop implements AgentService {
     await _maybeCompact();
 
     if (isNewGoal) {
+      yield const AgentThinking(activeTodo: 'planning');
       final plan = await _plan(userInput);
       if (plan != null) {
         yield AgentToolCall('write_todos', plan);
@@ -183,6 +184,7 @@ class AgentLoop implements AgentService {
       }
 
       await _maybeCompact();
+      yield AgentThinking(activeTodo: todos.active?.content);
       final call = await _nextCall(reminder: reminder);
       if (call == null) {
         yield const AgentFinished('Model returned no tool call.');

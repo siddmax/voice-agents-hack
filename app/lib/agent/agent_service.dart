@@ -30,6 +30,15 @@ class AgentTodoUpdate extends AgentEvent {
   const AgentTodoUpdate(this.todos);
 }
 
+/// Emitted while the model is generating the next call. The UI renders this
+/// as a transient "thinking" indicator that disappears as soon as any other
+/// event arrives. Carries the active TODO content so the user can see what
+/// the agent is currently working on.
+class AgentThinking extends AgentEvent {
+  final String? activeTodo;
+  const AgentThinking({this.activeTodo});
+}
+
 class AgentFinished extends AgentEvent {
   final String summary;
   const AgentFinished(this.summary);

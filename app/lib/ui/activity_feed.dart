@@ -38,6 +38,7 @@ class _ActivityFeedState extends State<ActivityFeed> {
     final rows = <_FeedRow>[];
     final buf = StringBuffer();
     List<TodoItem>? latestTodos;
+    String? thinkingHint;
 
     void flushTokens() {
       if (buf.isEmpty) return;
@@ -57,8 +58,10 @@ class _ActivityFeedState extends State<ActivityFeed> {
     for (final e in widget.events) {
       switch (e) {
         case AgentToken(:final text):
+          thinkingHint = null;
           buf.write(text);
         case AgentToolCall(:final toolName, :final args):
+          thinkingHint = null;
           flushTokens();
           final idx = consumed[toolName] ?? 0;
           final results = resultQueue[toolName] ?? const [];
@@ -72,13 +75,19 @@ class _ActivityFeedState extends State<ActivityFeed> {
           // Consumed above.
           break;
         case AgentTodoUpdate(:final todos):
+          thinkingHint = null;
           latestTodos = todos;
+        case AgentThinking(:final activeTodo):
+          // Transient: only the latest one is shown, replaced by any later event.
+          thinkingHint = activeTodo ?? 'thinking';
         case AgentFinished(:final summary):
+          thinkingHint = null;
           flushTokens();
           rows.add(_FinishedRow(summary));
       }
     }
     flushTokens();
+    if (thinkingHint != null) rows.add(_ThinkingRow(thinkingHint));
 
     return [
       if (latestTodos != null && latestTodos.isNotEmpty)
@@ -183,30 +192,149 @@ class _TodoHeaderRow extends _FeedRow {
   _TodoHeaderRow(this.todos);
 
   @override
+  Widget build(BuildContext context) => _TodoHeaderWidget(todos: todos);
+}
+
+class _TodoHeaderWidget extends StatefulWidget {
+  final List<TodoItem> todos;
+  const _TodoHeaderWidget({required this.todos});
+
+  @override
+  State<_TodoHeaderWidget> createState() => _TodoHeaderWidgetState();
+}
+
+class _TodoHeaderWidgetState extends State<_TodoHeaderWidget> {
+  bool _expanded = false;
+
+  @override
   Widget build(BuildContext context) {
+    final todos = widget.todos;
     final active = todos.firstWhere(
       (t) => t.status == TodoStatus.inProgress,
       orElse: () => todos.first,
     );
     final scheme = Theme.of(context).colorScheme;
+    final doneCount = todos.where((t) => t.status == TodoStatus.completed).length;
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
-      padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: scheme.primaryContainer,
         borderRadius: BorderRadius.circular(12),
       ),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: () => setState(() => _expanded = !_expanded),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Icon(Icons.task_alt,
+                      size: 18, color: scheme.onPrimaryContainer),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      active.content,
+                      style: TextStyle(
+                        color: scheme.onPrimaryContainer,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  Text(
+                    '$doneCount / ${todos.length}',
+                    style: TextStyle(
+                      color: scheme.onPrimaryContainer.withValues(alpha: 0.7),
+                      fontSize: 12,
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  Icon(
+                    _expanded ? Icons.expand_less : Icons.expand_more,
+                    size: 18,
+                    color: scheme.onPrimaryContainer,
+                  ),
+                ],
+              ),
+              if (_expanded) ...[
+                const SizedBox(height: 8),
+                Divider(
+                    height: 1,
+                    color: scheme.onPrimaryContainer.withValues(alpha: 0.2)),
+                const SizedBox(height: 8),
+                for (final t in todos) _todoRow(context, t, scheme, active),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _todoRow(BuildContext context, TodoItem t, ColorScheme scheme,
+      TodoItem active) {
+    final isActive = identical(t, active);
+    final done = t.status == TodoStatus.completed;
+    final IconData icon;
+    switch (t.status) {
+      case TodoStatus.completed:
+        icon = Icons.check_box_outlined;
+      case TodoStatus.inProgress:
+        icon = Icons.radio_button_checked;
+      case TodoStatus.pending:
+        icon = Icons.radio_button_unchecked;
+    }
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
       child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(Icons.task_alt, size: 18, color: scheme.onPrimaryContainer),
+          Icon(icon, size: 16, color: scheme.onPrimaryContainer),
           const SizedBox(width: 8),
           Expanded(
             child: Text(
-              active.content,
+              t.content,
               style: TextStyle(
-                color: scheme.onPrimaryContainer,
-                fontWeight: FontWeight.w600,
+                color: scheme.onPrimaryContainer
+                    .withValues(alpha: done ? 0.55 : 1.0),
+                fontWeight: isActive ? FontWeight.w600 : FontWeight.normal,
+                decoration: done ? TextDecoration.lineThrough : null,
               ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ThinkingRow extends _FeedRow {
+  final String hint;
+  _ThinkingRow(this.hint);
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 14,
+            height: 14,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              color: scheme.primary,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Text(
+            hint == 'thinking' ? 'thinking…' : 'thinking · $hint',
+            style: TextStyle(
+              color: scheme.outline,
+              fontStyle: FontStyle.italic,
+              fontSize: 13,
             ),
           ),
         ],
