@@ -2,3 +2,7 @@ app/android/app/src/main/jniLibs/
 app/android/local.properties
 *.keystore
 *.jks
+
+# Cactus vendored xcframework (user-built via cactus/flutter/build.sh)
+app/ios/Frameworks/
+
