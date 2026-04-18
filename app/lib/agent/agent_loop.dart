@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import '../cactus/engine.dart';
 import 'agent_service.dart';
+import 'compaction.dart';
 import 'memory.dart';
 import 'memory_tools.dart';
 import 'prompt_assembler.dart';
@@ -15,9 +16,10 @@ class AgentLoop implements AgentService {
   final Memory memory;
   final ToolRegistry tools;
   final PromptAssembler assembler;
+  final MessageListCompactor? compactor;
   final int maxSteps;
 
-  final List<Map<String, dynamic>> _history = [];
+  List<Map<String, dynamic>> _history = [];
   final List<String> _recentToolKeys = [];
   bool _cancelled = false;
   int _stepsSinceReminder = 0;
@@ -28,6 +30,7 @@ class AgentLoop implements AgentService {
     required this.memory,
     required this.tools,
     required this.assembler,
+    this.compactor,
     // Lane A's 20-step eval showed Gemma 4 E4B INT4 degrades past ~turn 11
     // without set_tool_constraints. 10 leaves headroom for the plan phase.
     this.maxSteps = 10,
@@ -137,6 +140,8 @@ class AgentLoop implements AgentService {
     final bool isNewGoal = _history.isEmpty || _looksLikeNewGoal(userInput);
     _history.add({'role': 'user', 'content': userInput});
 
+    await _maybeCompact();
+
     if (isNewGoal) {
       final plan = await _plan(userInput);
       if (plan != null) {
@@ -162,6 +167,7 @@ class AgentLoop implements AgentService {
         _stepsSinceReminder = 0;
       }
 
+      await _maybeCompact();
       final call = await _nextCall(reminder: reminder);
       if (call == null) {
         yield const AgentFinished('Model returned no tool call.');
@@ -219,6 +225,16 @@ class AgentLoop implements AgentService {
   }
 
   // ---- internals ----
+
+  Future<void> _maybeCompact() async {
+    final c = compactor;
+    if (c == null) return;
+    try {
+      _history = await c.maybeCompact(_history);
+    } catch (_) {
+      // Never crash the caller on compactor failure.
+    }
+  }
 
   bool _looksLikeNewGoal(String input) {
     final t = input.trim();
