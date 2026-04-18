@@ -1,0 +1,96 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
+
+import '../agent/agent_service.dart';
+
+enum MessageRole { user, agent }
+
+class ToolCallBubble {
+  final String toolName;
+  final Map<String, dynamic> args;
+  String? resultSummary;
+  ToolCallBubble(this.toolName, this.args);
+}
+
+class ChatMessage {
+  final MessageRole role;
+  final List<Object> parts = [];
+  ChatMessage(this.role, [String? initial]) {
+    if (initial != null && initial.isNotEmpty) parts.add(initial);
+  }
+
+  String get text => parts.whereType<String>().join();
+}
+
+class ChatController extends ChangeNotifier {
+  final AgentService agent;
+  ChatController(this.agent);
+
+  final List<ChatMessage> messages = [];
+  List<TodoItem> todos = const [];
+
+  StreamSubscription<AgentEvent>? _sub;
+  bool _running = false;
+  String? _lastFinishedSummary;
+
+  bool get running => _running;
+  String? consumeFinishedSummary() {
+    final s = _lastFinishedSummary;
+    _lastFinishedSummary = null;
+    return s;
+  }
+
+  Future<void> send(String userText) async {
+    final trimmed = userText.trim();
+    if (trimmed.isEmpty || _running) return;
+    _running = true;
+    messages.add(ChatMessage(MessageRole.user, trimmed));
+    final agentMsg = ChatMessage(MessageRole.agent);
+    messages.add(agentMsg);
+    notifyListeners();
+
+    _sub = agent.run(trimmed).listen((evt) {
+      switch (evt) {
+        case AgentToken(:final text):
+          if (agentMsg.parts.isNotEmpty && agentMsg.parts.last is String) {
+            agentMsg.parts[agentMsg.parts.length - 1] =
+                (agentMsg.parts.last as String) + text;
+          } else {
+            agentMsg.parts.add(text);
+          }
+        case AgentToolCall(:final toolName, :final args):
+          agentMsg.parts.add(ToolCallBubble(toolName, args));
+        case AgentToolResult(:final toolName, :final summary):
+          for (var i = agentMsg.parts.length - 1; i >= 0; i--) {
+            final p = agentMsg.parts[i];
+            if (p is ToolCallBubble &&
+                p.toolName == toolName &&
+                p.resultSummary == null) {
+              p.resultSummary = summary;
+              break;
+            }
+          }
+        case AgentTodoUpdate(:final todos):
+          this.todos = todos;
+        case AgentFinished(:final summary):
+          _lastFinishedSummary = summary;
+      }
+      notifyListeners();
+    }, onDone: () {
+      _running = false;
+      notifyListeners();
+    }, onError: (e, st) {
+      agentMsg.parts.add('\n\n[error: $e]');
+      _running = false;
+      notifyListeners();
+    });
+  }
+
+  @override
+  Future<void> dispose() async {
+    await _sub?.cancel();
+    await agent.cancel();
+    super.dispose();
+  }
+}
