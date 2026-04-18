@@ -48,6 +48,7 @@ class _ScriptedEngine implements CactusEngine {
     int retries = 3,
     int maxTokens = 512,
     double temperature = 0.2,
+    String? query,
   }) async {
     if (_i >= jsonScript.length) {
       throw StateError('ran out of scripted JSON');

@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import '../agent/output_processor.dart';
 import 'cactus.dart';
 
 class JsonRetryExhausted implements Exception {
@@ -88,6 +89,7 @@ class CactusEngine {
     int retries = 3,
     int maxTokens = 512,
     double temperature = 0.2,
+    String? query,
   }) async {
     final convo = List<Map<String, dynamic>>.from(messages);
     String lastOutput = '';
@@ -101,7 +103,28 @@ class CactusEngine {
         temperature: temperature,
       );
       final parsed = _tryParseJson(lastOutput);
-      if (parsed != null) return parsed;
+      if (parsed != null) {
+        // If it looks like a tool call and we have tools, run output processor.
+        if (tools != null &&
+            parsed['name'] is String &&
+            parsed['arguments'] is Map) {
+          return OutputProcessor.process(
+            call: parsed,
+            tools: tools,
+            query: query,
+          );
+        }
+        return parsed;
+      }
+
+      // Refusal detection: parse failed AND raw looks like a refusal -> stop.
+      if (looksLikeRefusal(lastOutput)) {
+        throw JsonRetryExhausted(
+          lastOutput,
+          'model refused',
+          attempt + 1,
+        );
+      }
 
       lastErr = 'parse failed';
       if (attempt == retries) break;
@@ -126,22 +149,4 @@ class CactusEngine {
   }
 }
 
-Map<String, dynamic>? _tryParseJson(String raw) {
-  final text = raw.trim();
-  if (text.isEmpty) return null;
-  final candidates = <String>[text];
-  final fenced = RegExp(r'```(?:json)?\s*([\s\S]*?)```').firstMatch(text);
-  if (fenced != null) candidates.add(fenced.group(1)!.trim());
-  final start = text.indexOf('{');
-  final end = text.lastIndexOf('}');
-  if (start != -1 && end > start) {
-    candidates.add(text.substring(start, end + 1));
-  }
-  for (final c in candidates) {
-    try {
-      final v = jsonDecode(c);
-      if (v is Map<String, dynamic>) return v;
-    } catch (_) {}
-  }
-  return null;
-}
+Map<String, dynamic>? _tryParseJson(String raw) => extractJsonObject(raw);
