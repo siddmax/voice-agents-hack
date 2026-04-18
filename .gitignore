@@ -1,0 +1,4 @@
+app/android/app/src/main/jniLibs/
+app/android/local.properties
+*.keystore
+*.jks
