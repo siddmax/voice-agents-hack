@@ -4,6 +4,7 @@ import 'dart:convert';
 import '../cactus/engine.dart';
 import 'agent_service.dart';
 import 'memory.dart';
+import 'memory_tools.dart';
 import 'prompt_assembler.dart';
 import 'todos.dart';
 import 'tool_registry.dart';
@@ -32,6 +33,7 @@ class AgentLoop implements AgentService {
     this.maxSteps = 10,
   }) {
     _registerCoreTools();
+    registerMemoryTools(tools, memory);
   }
 
   void _registerCoreTools() {
@@ -308,7 +310,8 @@ class AgentLoop implements AgentService {
     final line =
         '- ${DateTime.now().toIso8601String()} :: "${userInput.trim()}" -> $outcome';
     try {
-      await memory.append('Notes', line);
+      await memory.append('Notes.md', line);
+      await memory.refreshInjectedCache();
     } catch (_) {}
   }
 }

@@ -53,7 +53,9 @@ class PromptAssembler {
   });
 
   String _buildSystem() {
-    final mem = _truncateMiddle(readMemory(), 2000);
+    // Injected memory is now AGENT.md + INDEX.md + identity + prefs only.
+    // Cap at 1500 tokens; the agent pulls detail via memory_view.
+    final mem = _truncateMiddle(readMemory(), 1500);
     final ledger = todos.renderLedger();
     final active = todos.active;
     final goal = active == null

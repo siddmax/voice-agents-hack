@@ -20,6 +20,7 @@ class RealAgentFactory {
     try {
       final engine = await CactusEngine.load(modelPath);
       final memory = await Memory.open();
+      await memory.refreshInjectedCache();
       final toolResults = ToolResultStore();
       final toolRegistry = ToolRegistry();
       final assembler = PromptAssembler(
