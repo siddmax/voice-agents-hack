@@ -6,6 +6,28 @@
 - Android 16+ (API 36, ~Pixel 6+)
 - macOS 11.0+ (developer build only)
 
+## iOS device build
+
+```bash
+cd /Users/sidsharma/CactusHackathon/voice-agents-hack/app
+./ios/swap-cactus-slice.sh device         # one-time per build target
+flutter build ios --release --no-codesign
+# Open ios/Runner.xcworkspace in Xcode → select your team in Signing → Run.
+```
+
+The unsigned `.app` lands at `build/ios/iphoneos/Runner.app` (~22 MB).
+Switch back to the simulator slice before doing a sim build:
+
+```bash
+./ios/swap-cactus-slice.sh sim
+```
+
+The framework swap is required because Flutter's `BUILD_DIR` override
+trips the CocoaPods `Copy XCFrameworks` resolver — the linker can't find
+the right slice when both arm64-device and arm64-simulator live in one
+xcframework. We vendor the resolved slice as `cactus.framework` and swap
+it manually per target.
+
 ## iOS simulator (the easy path)
 
 ```bash
