@@ -44,19 +44,12 @@ Future<void> main() async {
 
   final resolvedPath = overridePath ?? existingPath;
 
-  AgentService? built;
-  String? startupError;
-
-  if (resolvedPath != null && docsDir != null) {
-    built = await _buildRealAgent(resolvedPath);
-    if (built == null) {
-      startupError = 'Model load failed — falling back to mock.';
-    }
-  }
-
+  // The agent build (which calls cactusInit and memory-maps several GB
+  // of weights) used to await here, blocking runApp and showing a frozen
+  // white screen for the duration. We hand it off to the SyndaiApp state
+  // so the UI renders immediately with a "Warming up Syndai" indicator
+  // while the model loads in a background isolate.
   runApp(SyndaiApp(
-    preBuiltAgent: built,
-    startupError: startupError,
     initialModelPath: resolvedPath,
     tier: tier,
     documentsDir: docsDir,
@@ -121,6 +114,7 @@ class _SyndaiAppState extends State<SyndaiApp> {
   String? _modelPath;
   AgentService? _agent;
   String? _startupError;
+  bool _loadingAgent = false;
 
   @override
   void initState() {
@@ -128,16 +122,26 @@ class _SyndaiAppState extends State<SyndaiApp> {
     _modelPath = widget.initialModelPath;
     _agent = widget.preBuiltAgent;
     _startupError = widget.startupError;
+    if (_modelPath != null && _agent == null && widget.agentFactory == null) {
+      _loadAgent(_modelPath!);
+    }
   }
 
-  Future<void> _onModelReady(String modelPath) async {
+  Future<void> _loadAgent(String modelPath) async {
+    if (_loadingAgent) return;
+    setState(() => _loadingAgent = true);
     final agent = await _buildRealAgent(modelPath);
     if (!mounted) return;
     setState(() {
-      _modelPath = modelPath;
       _agent = agent;
-      _startupError = agent == null ? 'Model load failed — using mock.' : null;
+      _loadingAgent = false;
+      if (agent == null) _startupError = 'Model load failed — using mock.';
     });
+  }
+
+  Future<void> _onModelReady(String modelPath) async {
+    setState(() => _modelPath = modelPath);
+    await _loadAgent(modelPath);
   }
 
   @override
@@ -145,13 +149,16 @@ class _SyndaiAppState extends State<SyndaiApp> {
     // Test override short-circuits the download flow entirely.
     final testFactory = widget.agentFactory;
     final hasModel = testFactory != null || _modelPath != null;
+    final agentReady = testFactory != null || _agent != null;
     AgentService agentFactory() =>
         testFactory != null ? testFactory() : (_agent ?? MockAgentService());
 
     return MultiProvider(
       // Force the provider tree to rebuild (and ChatController to recreate)
-      // when the model path changes after a successful download.
-      key: ValueKey('app-${_modelPath ?? "none"}'),
+      // when the model path or agent readiness changes — so the JarvisScreen
+      // gets a fresh ChatController bound to the real agent the moment
+      // cactusInit returns.
+      key: ValueKey('app-${_modelPath ?? "none"}-${agentReady ? "real" : "warming"}'),
       providers: [
         ChangeNotifierProvider(create: (_) => AppSettings()..load()),
         ChangeNotifierProvider(create: (_) => McpServerStore()..load()),
@@ -173,7 +180,12 @@ class _SyndaiAppState extends State<SyndaiApp> {
           useMaterial3: true,
         ),
         home: hasModel
-            ? JarvisScreen(startupError: _startupError)
+            ? JarvisScreen(
+                startupError: _startupError ??
+                    (_loadingAgent
+                        ? 'Warming up Syndai — loading the model. First time can take ~30 s.'
+                        : null),
+              )
             : (widget.documentsDir != null
                 ? ModelDownloadScreen(
                     tier: widget.tier,

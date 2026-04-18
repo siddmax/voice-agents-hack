@@ -1,5 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:ffi';
+import 'dart:isolate';
 
 import '../agent/output_processor.dart';
 import 'cactus.dart';
@@ -23,8 +25,17 @@ class CactusEngine {
   CactusEngine._(this._handle);
 
   static Future<CactusEngine> load(String modelPath) async {
+    // cactusInit memory-maps the weights (~8 GB for E4B) and does the model
+    // graph setup — tens of seconds on a Mac, longer on iOS simulator.
+    // Run it off the main isolate so the UI can render a loading state
+    // instead of a frozen white screen.
+    final handleAddr = await Isolate.run(() => _loadInIsolate(modelPath));
+    return CactusEngine._(Pointer<Void>.fromAddress(handleAddr));
+  }
+
+  static int _loadInIsolate(String modelPath) {
     final handle = cactusInit(modelPath, null, false);
-    return CactusEngine._(handle);
+    return handle.address;
   }
 
   Stream<String> complete({
@@ -70,16 +81,37 @@ class CactusEngine {
     int maxTokens = 512,
     double temperature = 0.2,
   }) async {
-    final buf = StringBuffer();
-    await for (final t in complete(
-      messages: messages,
-      tools: tools,
-      maxTokens: maxTokens,
-      temperature: temperature,
-    )) {
-      buf.write(t);
-    }
-    return buf.toString();
+    _checkOpen();
+    // cactus_complete is a synchronous FFI call that holds the thread for the
+    // full prefill+decode cycle (~seconds on a Mac, tens of seconds on iOS
+    // simulator with the 4B model). Running it on the main isolate freezes
+    // the UI. Hand it to a background isolate via Isolate.run and reconstruct
+    // the model handle from its raw address — Pointer is sendable as int and
+    // the cactus context is owned by us, accessed sequentially.
+    final handleAddr = _handle.address;
+    final messagesJson = jsonEncode(messages);
+    final toolsJson = tools == null ? null : jsonEncode(tools);
+    final optionsJson = jsonEncode({
+      'temperature': temperature,
+      'max_tokens': maxTokens,
+      'top_p': 0.95,
+    });
+    return Isolate.run(() => _completeInIsolate(
+          handleAddr,
+          messagesJson,
+          optionsJson,
+          toolsJson,
+        ));
+  }
+
+  static String _completeInIsolate(
+    int handleAddr,
+    String messagesJson,
+    String optionsJson,
+    String? toolsJson,
+  ) {
+    final handle = Pointer<Void>.fromAddress(handleAddr);
+    return cactusComplete(handle, messagesJson, optionsJson, toolsJson, null);
   }
 
   Future<Map<String, dynamic>> completeJson({
