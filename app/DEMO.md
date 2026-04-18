@@ -1,5 +1,18 @@
 # Syndai — running the real thing
 
+## Supported OS versions
+
+- iOS 26.0+ (iPhone 11 and newer)
+- Android 16+ (API 36, ~Pixel 6+)
+- macOS 11.0+ (developer build only)
+
+If `flutter build apk` fails because your Android SDK doesn't have API 36
+platforms installed, run:
+
+```bash
+sdkmanager "platforms;android-36" "build-tools;36.0.0"
+```
+
 The app has two modes:
 
 - **Mock mode (default)** — no model, fake agent, fake tool calls. Useful for UI dev. Just `flutter run -d macos`.
