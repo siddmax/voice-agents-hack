@@ -28,6 +28,20 @@ the right slice when both arm64-device and arm64-simulator live in one
 xcframework. We vendor the resolved slice as `cactus.framework` and swap
 it manually per target.
 
+## Flutter Swift Package Manager (REQUIRED on this project)
+
+`path_provider_foundation` v2.6+ ships SPM-only — no CocoaPods podspec.
+Without SPM enabled, `getApplicationDocumentsDirectory()` throws and the
+app boots with a "no writable documents directory" error. Enable once per
+machine:
+
+```bash
+flutter config --enable-swift-package-manager
+```
+
+You'll see "Adding Swift Package Manager integration..." in the next
+`flutter build ios` output. From then on the Pods + SPM trees coexist.
+
 ## iOS simulator (the easy path)
 
 ```bash
