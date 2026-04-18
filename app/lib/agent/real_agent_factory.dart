@@ -3,6 +3,7 @@ import '../mcp/mcp_config.dart';
 import '../mcp/mcp_registry.dart';
 import 'agent_loop.dart';
 import 'agent_service.dart';
+import 'compaction.dart';
 import 'memory.dart';
 import 'prompt_assembler.dart';
 import 'todos.dart';
@@ -35,6 +36,7 @@ class RealAgentFactory {
         memory: memory,
         tools: toolRegistry,
         assembler: assembler,
+        compactor: MessageListCompactor(engine: engine),
       );
     } catch (_) {
       return null;
