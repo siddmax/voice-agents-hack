@@ -44,6 +44,14 @@ class AgentFinished extends AgentEvent {
   const AgentFinished(this.summary);
 }
 
+/// Surfaced when the agent's underlying stream errors out (e.g. the LLM
+/// engine threw or hung). Renders in the UI so the user sees what went
+/// wrong instead of a silent forever-spinner.
+class AgentError extends AgentEvent {
+  final String message;
+  const AgentError(this.message);
+}
+
 class TodoItem {
   final String id;
   final String content;

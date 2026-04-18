@@ -13,15 +13,6 @@ class _ScriptedEngine implements CactusEngine {
   _ScriptedEngine(this.textResponses, {this.throwOnText = false});
 
   @override
-  Stream<String> complete({
-    required List<Map<String, dynamic>> messages,
-    List<Map<String, dynamic>>? tools,
-    int maxTokens = 512,
-    double temperature = 0.2,
-  }) =>
-      const Stream.empty();
-
-  @override
   Future<String> completeText({
     required List<Map<String, dynamic>> messages,
     List<Map<String, dynamic>>? tools,

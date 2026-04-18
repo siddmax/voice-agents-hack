@@ -145,13 +145,16 @@ class _JarvisScreenState extends State<JarvisScreen> {
                     child: Center(
                       child: Column(
                         mainAxisAlignment: MainAxisAlignment.center,
+                        mainAxisSize: MainAxisSize.min,
                         children: [
-                          JarvisOrb(
-                            state: _orb,
-                            amplitude: _amplitude,
-                            size: media.size.width * 0.6,
+                          Flexible(
+                            child: JarvisOrb(
+                              state: _orb,
+                              amplitude: _amplitude,
+                              size: media.size.width * 0.5,
+                            ),
                           ),
-                          const SizedBox(height: 16),
+                          const SizedBox(height: 12),
                           Text(
                             _hintForState(chat.running, _orb),
                             style: Theme.of(context)

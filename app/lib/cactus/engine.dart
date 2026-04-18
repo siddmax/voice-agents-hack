@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:ffi';
 import 'dart:isolate';
 
 import '../agent/output_processor.dart';
@@ -18,61 +17,42 @@ class JsonRetryExhausted implements Exception {
 
 String _truncate(String s, int n) => s.length <= n ? s : '${s.substring(0, n)}...';
 
+/// One-shot Isolate.run on every cactus_complete call broke after the first
+/// because cactus's per-thread state (set up by cactusInit) doesn't survive
+/// the worker isolate being spawned/torn-down per call. The fix is a
+/// long-lived worker isolate that owns the model handle and serves
+/// cactusInit + cactusComplete requests via SendPort.
 class CactusEngine {
-  final CactusModelT _handle;
+  final SendPort _requests;
+  final ReceivePort _exit;
+  final Isolate _worker;
   bool _closed = false;
+  Future<void>? _pending;
 
-  CactusEngine._(this._handle);
+  CactusEngine._(this._requests, this._exit, this._worker);
 
   static Future<CactusEngine> load(String modelPath) async {
-    // cactusInit memory-maps the weights (~8 GB for E4B) and does the model
-    // graph setup — tens of seconds on a Mac, longer on iOS simulator.
-    // Run it off the main isolate so the UI can render a loading state
-    // instead of a frozen white screen.
-    final handleAddr = await Isolate.run(() => _loadInIsolate(modelPath));
-    return CactusEngine._(Pointer<Void>.fromAddress(handleAddr));
-  }
+    final ready = ReceivePort();
+    final exit = ReceivePort();
+    final worker = await Isolate.spawn<_BootMsg>(
+      _workerMain,
+      _BootMsg(ready.sendPort, modelPath),
+      onExit: exit.sendPort,
+      debugName: 'CactusEngineWorker',
+    );
 
-  static int _loadInIsolate(String modelPath) {
-    final handle = cactusInit(modelPath, null, false);
-    return handle.address;
-  }
-
-  Stream<String> complete({
-    required List<Map<String, dynamic>> messages,
-    List<Map<String, dynamic>>? tools,
-    int maxTokens = 512,
-    double temperature = 0.2,
-  }) {
-    _checkOpen();
-    final controller = StreamController<String>();
-    final options = jsonEncode({
-      'temperature': temperature,
-      'max_tokens': maxTokens,
-      'top_p': 0.95,
-    });
-    final messagesJson = jsonEncode(messages);
-    final toolsJson = tools == null ? null : jsonEncode(tools);
-
-    Future(() {
-      try {
-        cactusComplete(
-          _handle,
-          messagesJson,
-          options,
-          toolsJson,
-          (token, _) {
-            if (token.isNotEmpty) controller.add(token);
-          },
-        );
-        controller.close();
-      } catch (e, st) {
-        controller.addError(e, st);
-        controller.close();
-      }
-    });
-
-    return controller.stream;
+    final msg = await ready.first;
+    ready.close();
+    if (msg is _LoadOk) {
+      return CactusEngine._(msg.requests, exit, worker);
+    } else if (msg is _LoadErr) {
+      worker.kill(priority: Isolate.immediate);
+      exit.close();
+      throw Exception('cactusInit failed: ${msg.error}');
+    }
+    worker.kill(priority: Isolate.immediate);
+    exit.close();
+    throw Exception('cactusInit returned unexpected message: $msg');
   }
 
   Future<String> completeText({
@@ -82,36 +62,48 @@ class CactusEngine {
     double temperature = 0.2,
   }) async {
     _checkOpen();
-    // cactus_complete is a synchronous FFI call that holds the thread for the
-    // full prefill+decode cycle (~seconds on a Mac, tens of seconds on iOS
-    // simulator with the 4B model). Running it on the main isolate freezes
-    // the UI. Hand it to a background isolate via Isolate.run and reconstruct
-    // the model handle from its raw address — Pointer is sendable as int and
-    // the cactus context is owned by us, accessed sequentially.
-    final handleAddr = _handle.address;
-    final messagesJson = jsonEncode(messages);
-    final toolsJson = tools == null ? null : jsonEncode(tools);
-    final optionsJson = jsonEncode({
-      'temperature': temperature,
-      'max_tokens': maxTokens,
-      'top_p': 0.95,
-    });
-    return Isolate.run(() => _completeInIsolate(
-          handleAddr,
-          messagesJson,
-          optionsJson,
-          toolsJson,
-        ));
-  }
-
-  static String _completeInIsolate(
-    int handleAddr,
-    String messagesJson,
-    String optionsJson,
-    String? toolsJson,
-  ) {
-    final handle = Pointer<Void>.fromAddress(handleAddr);
-    return cactusComplete(handle, messagesJson, optionsJson, toolsJson, null);
+    // Serialize requests — cactus is single-threaded for inference and the
+    // worker only handles one at a time.
+    final prev = _pending;
+    final completer = Completer<String>();
+    _pending = completer.future;
+    if (prev != null) {
+      try {
+        await prev;
+      } catch (_) {
+        // Swallow — caller of the prior request already saw the error.
+      }
+    }
+    try {
+      final reply = ReceivePort();
+      _requests.send(_CompleteReq(
+        reply: reply.sendPort,
+        messagesJson: jsonEncode(messages),
+        optionsJson: jsonEncode({
+          'temperature': temperature,
+          'max_tokens': maxTokens,
+          'top_p': 0.95,
+        }),
+        toolsJson: tools == null ? null : jsonEncode(tools),
+      ));
+      final res = await reply.first;
+      reply.close();
+      if (res is _CompleteOk) {
+        completer.complete(res.text);
+        return res.text;
+      } else if (res is _CompleteErr) {
+        final err = Exception('cactus_complete failed: ${res.error}');
+        completer.completeError(err);
+        throw err;
+      } else {
+        final err = Exception('cactus worker unexpected reply: $res');
+        completer.completeError(err);
+        throw err;
+      }
+    } catch (e) {
+      if (!completer.isCompleted) completer.completeError(e);
+      rethrow;
+    }
   }
 
   Future<Map<String, dynamic>> completeJson({
@@ -136,7 +128,6 @@ class CactusEngine {
       );
       final parsed = _tryParseJson(lastOutput);
       if (parsed != null) {
-        // If it looks like a tool call and we have tools, run output processor.
         if (tools != null &&
             parsed['name'] is String &&
             parsed['arguments'] is Map) {
@@ -149,7 +140,6 @@ class CactusEngine {
         return parsed;
       }
 
-      // Refusal detection: parse failed AND raw looks like a refusal -> stop.
       if (looksLikeRefusal(lastOutput)) {
         throw JsonRetryExhausted(
           lastOutput,
@@ -173,7 +163,8 @@ class CactusEngine {
   void close() {
     if (_closed) return;
     _closed = true;
-    cactusDestroy(_handle);
+    _worker.kill(priority: Isolate.immediate);
+    _exit.close();
   }
 
   void _checkOpen() {
@@ -182,3 +173,73 @@ class CactusEngine {
 }
 
 Map<String, dynamic>? _tryParseJson(String raw) => extractJsonObject(raw);
+
+// ---------- worker isolate protocol ----------
+
+class _BootMsg {
+  final SendPort ready;
+  final String modelPath;
+  _BootMsg(this.ready, this.modelPath);
+}
+
+class _LoadOk {
+  final SendPort requests;
+  _LoadOk(this.requests);
+}
+
+class _LoadErr {
+  final String error;
+  _LoadErr(this.error);
+}
+
+class _CompleteReq {
+  final SendPort reply;
+  final String messagesJson;
+  final String optionsJson;
+  final String? toolsJson;
+  _CompleteReq({
+    required this.reply,
+    required this.messagesJson,
+    required this.optionsJson,
+    required this.toolsJson,
+  });
+}
+
+class _CompleteOk {
+  final String text;
+  _CompleteOk(this.text);
+}
+
+class _CompleteErr {
+  final String error;
+  _CompleteErr(this.error);
+}
+
+void _workerMain(_BootMsg boot) {
+  CactusModelT? handle;
+  try {
+    handle = cactusInit(boot.modelPath, null, false);
+  } catch (e) {
+    boot.ready.send(_LoadErr(e.toString()));
+    return;
+  }
+  final requests = ReceivePort();
+  boot.ready.send(_LoadOk(requests.sendPort));
+
+  requests.listen((msg) {
+    if (msg is _CompleteReq) {
+      try {
+        final text = cactusComplete(
+          handle!,
+          msg.messagesJson,
+          msg.optionsJson,
+          msg.toolsJson,
+          null,
+        );
+        msg.reply.send(_CompleteOk(text));
+      } catch (e) {
+        msg.reply.send(_CompleteErr(e.toString()));
+      }
+    }
+  });
+}

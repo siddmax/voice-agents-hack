@@ -92,6 +92,9 @@ class ChatController extends ChangeNotifier {
           break;
         case AgentFinished(:final summary):
           _lastFinishedSummary = summary;
+        case AgentError():
+          // Surfaces in the activity feed via events; nothing else to track.
+          break;
       }
       notifyListeners();
     }, onDone: () {
@@ -99,6 +102,7 @@ class ChatController extends ChangeNotifier {
       notifyListeners();
     }, onError: (e, st) {
       agentMsg.parts.add('\n\n[error: $e]');
+      events.add(AgentError(e.toString()));
       _running = false;
       notifyListeners();
     });

@@ -84,6 +84,10 @@ class _ActivityFeedState extends State<ActivityFeed> {
           thinkingHint = null;
           flushTokens();
           rows.add(_FinishedRow(summary));
+        case AgentError(:final message):
+          thinkingHint = null;
+          flushTokens();
+          rows.add(_ErrorRow(message));
       }
     }
     flushTokens();
@@ -302,6 +306,33 @@ class _TodoHeaderWidgetState extends State<_TodoHeaderWidget> {
                 fontWeight: isActive ? FontWeight.w600 : FontWeight.normal,
                 decoration: done ? TextDecoration.lineThrough : null,
               ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ErrorRow extends _FeedRow {
+  final String message;
+  _ErrorRow(this.message);
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(top: 8, bottom: 4),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(Icons.error_outline, size: 16, color: scheme.error),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              message.length > 240 ? '${message.substring(0, 240)}…' : message,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: scheme.error,
+                  ),
             ),
           ),
         ],
