@@ -11,6 +11,8 @@ class FakeCactusEngine implements CactusEngine {
   bool nextCloudHandoff = false;
   String? nextThinking;
   String? nextRaw;
+  String nextRagJson = '';
+  int ragQueryCalls = 0;
 
   FakeCactusEngine(this.jsonResponses);
 
@@ -121,6 +123,16 @@ class FakeCactusEngine implements CactusEngine {
       thinking: nextThinking,
     );
     return (json, meta);
+  }
+
+  @override
+  Future<String> ragQuery({
+    required String query,
+    int topK = 5,
+    Duration timeout = const Duration(seconds: 10),
+  }) async {
+    ragQueryCalls += 1;
+    return nextRagJson;
   }
 
   @override

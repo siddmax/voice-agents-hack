@@ -56,8 +56,8 @@ class _ScriptedEngine implements CactusEngine {
     void Function(int)? onTokenCount,
     Duration timeout = const Duration(minutes: 3),
   }) async => CactusResponse(
-        rawText: '{"success":true,"response":"","function_calls":[]}',
-      );
+    rawText: '{"success":true,"response":"","function_calls":[]}',
+  );
 
   @override
   Future<Map<String, dynamic>?> completeToolCall({
@@ -92,8 +92,7 @@ class _ScriptedEngine implements CactusEngine {
     bool enableThinking = false,
     Uint8List? pcmData,
     void Function(int)? onTokenCount,
-  }) async =>
-      {};
+  }) async => {};
 
   @override
   Future<(Map<String, dynamic>, CactusResponse)> completeJsonWithMetadata({
@@ -107,8 +106,14 @@ class _ScriptedEngine implements CactusEngine {
     bool enableThinking = false,
     Uint8List? pcmData,
     void Function(int)? onTokenCount,
-  }) async =>
-      (<String, dynamic>{}, CactusResponse(rawText: '{}'));
+  }) async => (<String, dynamic>{}, CactusResponse(rawText: '{}'));
+
+  @override
+  Future<String> ragQuery({
+    required String query,
+    int topK = 5,
+    Duration timeout = const Duration(seconds: 10),
+  }) async => '';
 
   @override
   void close() {}
@@ -129,41 +134,43 @@ void main() {
       expect(engine.seenMessages, isEmpty);
     });
 
-    test('over threshold -> summarizes head, preserves system + last 3',
-        () async {
-      final engine = _ScriptedEngine(['SUMMARY OF OLD STUFF']);
-      final c = MessageListCompactor(engine: engine, thresholdTokens: 50);
-      final big = 'x' * 1000; // many tokens
-      final msgs = <Map<String, dynamic>>[
-        {'role': 'system', 'content': 'sys'},
-        {'role': 'user', 'content': big},
-        {'role': 'assistant', 'content': big},
-        {'role': 'user', 'content': big},
-        {'role': 'assistant', 'content': big},
-        {'role': 'user', 'content': 'tail-1'},
-        {'role': 'assistant', 'content': 'tail-2'},
-        {'role': 'user', 'content': 'tail-3'},
-      ];
-      final out = await c.maybeCompact(msgs);
+    test(
+      'over threshold -> summarizes head, preserves system + last 3',
+      () async {
+        final engine = _ScriptedEngine(['SUMMARY OF OLD STUFF']);
+        final c = MessageListCompactor(engine: engine, thresholdTokens: 50);
+        final big = 'x' * 1000; // many tokens
+        final msgs = <Map<String, dynamic>>[
+          {'role': 'system', 'content': 'sys'},
+          {'role': 'user', 'content': big},
+          {'role': 'assistant', 'content': big},
+          {'role': 'user', 'content': big},
+          {'role': 'assistant', 'content': big},
+          {'role': 'user', 'content': 'tail-1'},
+          {'role': 'assistant', 'content': 'tail-2'},
+          {'role': 'user', 'content': 'tail-3'},
+        ];
+        final out = await c.maybeCompact(msgs);
 
-      // system + synthetic + last 3
-      expect(out.length, 5);
-      expect(out.first['role'], 'system');
-      expect(out.first['content'], 'sys');
-      expect(out[1]['role'], 'assistant');
-      expect(out[1]['content'], contains('[compacted]'));
-      expect(out[1]['content'], contains('SUMMARY OF OLD STUFF'));
-      expect(out[2]['content'], 'tail-1');
-      expect(out[3]['content'], 'tail-2');
-      expect(out[4]['content'], 'tail-3');
+        // system + synthetic + last 3
+        expect(out.length, 5);
+        expect(out.first['role'], 'system');
+        expect(out.first['content'], 'sys');
+        expect(out[1]['role'], 'assistant');
+        expect(out[1]['content'], contains('[compacted]'));
+        expect(out[1]['content'], contains('SUMMARY OF OLD STUFF'));
+        expect(out[2]['content'], 'tail-1');
+        expect(out[3]['content'], 'tail-2');
+        expect(out[4]['content'], 'tail-3');
 
-      // Verify completeText was called with the head slice.
-      expect(engine.seenMessages.length, 1);
-      final sent = engine.seenMessages.first;
-      expect(sent.first['role'], 'system');
-      expect(sent.first['content'], contains('Summarize'));
-      expect(sent.last['role'], 'user');
-    });
+        // Verify completeText was called with the head slice.
+        expect(engine.seenMessages.length, 1);
+        final sent = engine.seenMessages.first;
+        expect(sent.first['role'], 'system');
+        expect(sent.first['content'], contains('Summarize'));
+        expect(sent.last['role'], 'user');
+      },
+    );
 
     test('extracts tr_NNNN handles into synthetic message', () async {
       final engine = _ScriptedEngine(['summary']);

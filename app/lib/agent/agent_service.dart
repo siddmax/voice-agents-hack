@@ -74,5 +74,6 @@ abstract class AgentService {
   Future<FeedbackReport> analyzeFeedback(
     String transcript, {
     Uint8List? pcmData,
+    void Function(String activity)? onProgress,
   });
 }

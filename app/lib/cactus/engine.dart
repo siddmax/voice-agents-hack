@@ -33,8 +33,8 @@ class CactusResponse {
       confidence: (parsed['confidence'] as num?)?.toDouble(),
       cloudHandoff: parsed['cloud_handoff'] == true,
       thinking: parsed['thinking'] as String?,
-      timeToFirstTokenMs:
-          (parsed['time_to_first_token_ms'] as num?)?.toDouble(),
+      timeToFirstTokenMs: (parsed['time_to_first_token_ms'] as num?)
+          ?.toDouble(),
       decodeTps: (parsed['decode_tps'] as num?)?.toDouble(),
       ramUsageMb: (parsed['ram_usage_mb'] as num?)?.toDouble(),
     );
@@ -51,7 +51,8 @@ class JsonRetryExhausted implements Exception {
       'JsonRetryExhausted(attempts=$attempts, error=$parseError, output=${_truncate(lastOutput, 200)})';
 }
 
-String _truncate(String s, int n) => s.length <= n ? s : '${s.substring(0, n)}...';
+String _truncate(String s, int n) =>
+    s.length <= n ? s : '${s.substring(0, n)}...';
 
 /// Long-lived worker isolate owns the cactus model handle; main isolate
 /// serializes requests to it over SendPort. Per-call Isolate.run used to
@@ -84,12 +85,21 @@ class CactusEngine {
     });
   }
 
-  static Future<CactusEngine> load(String modelPath) async {
+  static Future<CactusEngine> load(
+    String modelPath, {
+    String? corpusDir,
+    bool cacheIndex = false,
+  }) async {
     final ready = ReceivePort();
     final exit = ReceivePort();
     final worker = await Isolate.spawn<_BootMsg>(
       _workerMain,
-      _BootMsg(ready.sendPort, modelPath),
+      _BootMsg(
+        ready: ready.sendPort,
+        modelPath: modelPath,
+        corpusDir: corpusDir,
+        cacheIndex: cacheIndex,
+      ),
       onExit: exit.sendPort,
       debugName: 'CactusEngineWorker',
     );
@@ -172,7 +182,9 @@ class CactusEngine {
     final completer = Completer<String>();
     _pending = completer.future;
     if (prev != null) {
-      try { await prev; } catch (_) {}
+      try {
+        await prev;
+      } catch (_) {}
     }
 
     final reply = ReceivePort();
@@ -182,7 +194,9 @@ class CactusEngine {
       var count = 0;
       tokenPort.listen((_) {
         count += 1;
-        try { onTokenCount(count); } catch (_) {}
+        try {
+          onTokenCount(count);
+        } catch (_) {}
       });
     }
 
@@ -193,24 +207,27 @@ class CactusEngine {
     });
 
     try {
-      _requests.send(_CompleteReq(
-        reply: reply.sendPort,
-        tokens: tokenPort?.sendPort,
-        messagesJson: jsonEncode(messages),
-        optionsJson: jsonEncode({
-          'temperature': temperature,
-          'max_tokens': maxTokens,
-          'top_p': 0.95,
-          if (forceTools) 'force_tools': true,
-          if (enableThinking) 'enable_thinking_if_supported': true,
-        }),
-        toolsJson: tools == null ? null : jsonEncode(tools),
-        pcmData: pcmData,
-      ));
+      _requests.send(
+        _CompleteReq(
+          reply: reply.sendPort,
+          tokens: tokenPort?.sendPort,
+          messagesJson: jsonEncode(messages),
+          optionsJson: jsonEncode({
+            'temperature': temperature,
+            'max_tokens': maxTokens,
+            'top_p': 0.95,
+            if (forceTools) 'force_tools': true,
+            if (enableThinking) 'enable_thinking_if_supported': true,
+          }),
+          toolsJson: tools == null ? null : jsonEncode(tools),
+          pcmData: pcmData,
+        ),
+      );
       final res = await replyCompleter.future.timeout(
         timeout,
-        onTimeout: () =>
-            throw Exception('cactus_complete timed out after ${timeout.inSeconds}s'),
+        onTimeout: () => throw Exception(
+          'cactus_complete timed out after ${timeout.inSeconds}s',
+        ),
       );
       if (res is _CompleteOk) {
         completer.complete(res.text);
@@ -268,11 +285,9 @@ class CactusEngine {
       if (c is! Map) continue;
       final call = c.cast<String, dynamic>();
       if (call['name'] is String && call['arguments'] is Map) {
-        out.add(OutputProcessor.process(
-          call: call,
-          tools: tools,
-          query: query,
-        ));
+        out.add(
+          OutputProcessor.process(call: call, tools: tools, query: query),
+        );
       }
     }
     return out;
@@ -360,11 +375,10 @@ class CactusEngine {
             if (tools != null &&
                 call['name'] is String &&
                 call['arguments'] is Map) {
-              return (OutputProcessor.process(
-                call: call,
-                tools: tools,
-                query: query,
-              ), meta);
+              return (
+                OutputProcessor.process(call: call, tools: tools, query: query),
+                meta,
+              );
             }
             return (call, meta);
           }
@@ -375,11 +389,7 @@ class CactusEngine {
       }
 
       if (looksLikeRefusal(lastOutput)) {
-        throw JsonRetryExhausted(
-          lastOutput,
-          'model refused',
-          attempt + 1,
-        );
+        throw JsonRetryExhausted(lastOutput, 'model refused', attempt + 1);
       }
 
       lastErr = 'parse failed';
@@ -392,6 +402,38 @@ class CactusEngine {
       });
     }
     throw JsonRetryExhausted(lastOutput, lastErr, retries + 1);
+  }
+
+  Future<String> ragQuery({
+    required String query,
+    int topK = 5,
+    Duration timeout = const Duration(seconds: 10),
+  }) async {
+    _checkOpen();
+    final reply = ReceivePort();
+    final replyCompleter = Completer<Object>();
+    _pendingReplies.add(replyCompleter);
+    reply.listen((msg) {
+      if (!replyCompleter.isCompleted) replyCompleter.complete(msg);
+    });
+
+    try {
+      _requests.send(_RagReq(reply: reply.sendPort, query: query, topK: topK));
+      final res = await replyCompleter.future.timeout(
+        timeout,
+        onTimeout: () => throw Exception(
+          'cactus_rag_query timed out after ${timeout.inSeconds}s',
+        ),
+      );
+      if (res is _RagOk) return res.json;
+      if (res is _RagErr) {
+        throw Exception('cactus_rag_query failed: ${res.error}');
+      }
+      throw Exception('cactus worker unexpected RAG reply: $res');
+    } finally {
+      _pendingReplies.remove(replyCompleter);
+      reply.close();
+    }
   }
 
   void close() {
@@ -420,7 +462,14 @@ Map<String, dynamic>? _tryParseJson(String raw) => extractJsonObject(raw);
 class _BootMsg {
   final SendPort ready;
   final String modelPath;
-  _BootMsg(this.ready, this.modelPath);
+  final String? corpusDir;
+  final bool cacheIndex;
+  _BootMsg({
+    required this.ready,
+    required this.modelPath,
+    required this.corpusDir,
+    required this.cacheIndex,
+  });
 }
 
 class _LoadOk {
@@ -460,10 +509,27 @@ class _CompleteErr {
   _CompleteErr(this.error);
 }
 
+class _RagReq {
+  final SendPort reply;
+  final String query;
+  final int topK;
+  _RagReq({required this.reply, required this.query, required this.topK});
+}
+
+class _RagOk {
+  final String json;
+  _RagOk(this.json);
+}
+
+class _RagErr {
+  final String error;
+  _RagErr(this.error);
+}
+
 void _workerMain(_BootMsg boot) {
   CactusModelT? handle;
   try {
-    handle = cactusInit(boot.modelPath, null, false);
+    handle = cactusInit(boot.modelPath, boot.corpusDir, boot.cacheIndex);
   } catch (e) {
     boot.ready.send(_LoadErr(e.toString()));
     return;
@@ -486,6 +552,13 @@ void _workerMain(_BootMsg boot) {
         msg.reply.send(_CompleteOk(text));
       } catch (e) {
         msg.reply.send(_CompleteErr(e.toString()));
+      }
+    } else if (msg is _RagReq) {
+      try {
+        final json = cactusRagQuery(handle!, msg.query, msg.topK);
+        msg.reply.send(_RagOk(json));
+      } catch (e) {
+        msg.reply.send(_RagErr(e.toString()));
       }
     }
   });

@@ -10,6 +10,7 @@ import 'package:syndai/agent/agent_service.dart';
 import 'package:syndai/agent/mock_agent_service.dart';
 import 'package:syndai/main.dart';
 import 'package:syndai/sdk/feedback_analyzer.dart';
+import 'package:syndai/sdk/feedback_kb.dart';
 import 'package:syndai/sdk/github_issue_service.dart';
 import 'package:syndai/sdk/screen_recording_capture.dart';
 import 'package:syndai/ui/activity_feed.dart';
@@ -43,8 +44,19 @@ class _FakeAgent implements AgentService {
   Future<FeedbackReport> analyzeFeedback(
     String transcript, {
     Uint8List? pcmData,
+    void Function(String activity)? onProgress,
   }) async {
-    return FeedbackReport.fromTranscript(transcript);
+    onProgress?.call('Agent searching KB');
+    final report = FeedbackReport.fromTranscript(transcript);
+    final kb = FeedbackKnowledgeBase.bundled();
+    final matches = await kb.search(
+      transcript: transcript,
+      category: report.category,
+      themes: report.themes,
+      painPoints: report.painPoints,
+    );
+    onProgress?.call('Agent summarizing');
+    return report.withResolution(kb.buildResolution(matches));
   }
 }
 
@@ -355,6 +367,7 @@ void main() {
     expect(find.text('Your Feedback'), findsOneWidget);
     expect(find.textContaining('Checkout is broken'), findsOneWidget);
     expect(find.textContaining('SORRY10'), findsOneWidget);
+    expect(find.text('Likely fix'), findsOneWidget);
     expect(find.textContaining('{'), findsNothing);
   });
 

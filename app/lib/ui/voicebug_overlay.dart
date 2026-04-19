@@ -38,7 +38,7 @@ class VoiceBugOverlay extends StatelessWidget {
             controller: controller,
           ),
           CaptureState.analyzingFeedback => _AnalyzingView(
-            label: 'Analyzing your feedback...',
+            label: controller.agentActivity,
             controller: controller,
           ),
           CaptureState.feedbackResult => _FeedbackResultView(
@@ -47,13 +47,15 @@ class VoiceBugOverlay extends StatelessWidget {
           CaptureState.couponOffer => _CouponOfferView(controller: controller),
           CaptureState.recording => _RecordingView(controller: controller),
           CaptureState.analyzingBugRepro => _AnalyzingView(
-            label: 'Compiling reproduction steps...',
+            label: controller.agentActivity,
             controller: controller,
           ),
           CaptureState.bugReproPreview => _BugReproPreviewView(
             controller: controller,
           ),
-          CaptureState.submitting => const _SubmittingView(),
+          CaptureState.submitting => _SubmittingView(
+            label: controller.agentActivity,
+          ),
           CaptureState.done => _DoneView(controller: controller),
           CaptureState.error => _ErrorView(controller: controller),
           _ => const SizedBox.shrink(),
@@ -1084,15 +1086,16 @@ class _BugReproPreviewView extends StatelessWidget {
 // ── Submitting ────────────────────────────────────────────────────────────────
 
 class _SubmittingView extends StatelessWidget {
-  const _SubmittingView();
+  final String label;
+  const _SubmittingView({required this.label});
 
   @override
   Widget build(BuildContext context) {
-    return const Center(
+    return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          SizedBox(
+          const SizedBox(
             width: 36,
             height: 36,
             child: CircularProgressIndicator(
@@ -1100,10 +1103,10 @@ class _SubmittingView extends StatelessWidget {
               strokeWidth: 3,
             ),
           ),
-          SizedBox(height: 16),
+          const SizedBox(height: 16),
           Text(
-            'Submitting...',
-            style: TextStyle(color: Colors.white70, fontSize: 14),
+            label,
+            style: const TextStyle(color: Colors.white70, fontSize: 14),
           ),
         ],
       ),

@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:syndai/sdk/feedback_analyzer.dart';
+import 'package:syndai/sdk/feedback_kb.dart';
 import 'package:syndai/sdk/github_issue_service.dart';
 import 'package:syndai/sdk/screen_recording_capture.dart';
 import 'package:syndai/ui/report_flow_controller.dart';
@@ -119,7 +120,11 @@ ReportFlowController _controller({
   required _FakeScreenRecorder screenRecorder,
   required _FakeIssueService issueService,
   required String transcript,
-  Future<FeedbackReport> Function(String transcript, Uint8List? pcmData)?
+  Future<FeedbackReport> Function(
+    String transcript,
+    Uint8List? pcmData,
+    void Function(String activity)? onProgress,
+  )?
   analyzeFeedback,
 }) {
   return ReportFlowController(
@@ -129,7 +134,10 @@ ReportFlowController _controller({
     transcribe: (_) async => transcript,
     analyzeFeedback:
         analyzeFeedback ??
-        (transcript, _) async => FeedbackReport.fromTranscript(transcript),
+        (transcript, _, onProgress) async {
+          onProgress?.call('Agent summarizing');
+          return FeedbackReport.fromTranscript(transcript);
+        },
     reproContext: () => const ReproContext(
       selectedSeat: 'Section 105, Row 10',
       deviceInfo:
@@ -219,48 +227,119 @@ void main() {
     expect(issueService.lastRequest?.body, isNot(contains('{')));
   });
 
-  test(
-    'feedback flow uses analyzer output for mixed negative sentiment',
-    () async {
-      final issueService = _FakeIssueService();
-      final ctrl = _controller(
-        recorder: _FakeRecorder(),
-        screenRecorder: _FakeScreenRecorder(),
-        issueService: issueService,
-        transcript: 'I love the seat map but checkout is still confusing.',
-        analyzeFeedback: (transcript, pcmData) async =>
-            FeedbackReport.fromJson({
-              'summary': 'Seat map is good, checkout is confusing',
-              'sentiment': 'mixed_negative',
-              'sentiment_score': 0.36,
-              'sentiment_confidence': 0.88,
-              'category': 'Checkout & Payment',
-              'themes': ['seat map', 'checkout'],
-              'pain_points': ['checkout is confusing'],
-              'requested_outcome': 'Make checkout clearer',
-              'emotional_tone': 'mixed',
-              'actionable_insight': 'Review checkout labels and fee copy.',
-              'offer_eligible': true,
-            }, plainTranscript: transcript),
-      );
+  test('feedback analysis exposes live agent activity', () async {
+    final started = Completer<void>();
+    final finish = Completer<FeedbackReport>();
+    final ctrl = _controller(
+      recorder: _FakeRecorder(),
+      screenRecorder: _FakeScreenRecorder(),
+      issueService: _FakeIssueService(),
+      transcript: 'Checkout keeps losing my coupon.',
+      analyzeFeedback: (transcript, _, onProgress) {
+        onProgress?.call('Agent searching KB');
+        started.complete();
+        return finish.future;
+      },
+    );
 
-      ctrl.openChooser();
-      await ctrl.chooseFeedback();
-      await ctrl.finishFeedback();
-      await ctrl.submit();
+    ctrl.openChooser();
+    await ctrl.chooseFeedback();
+    final pending = ctrl.finishFeedback();
+    await started.future;
 
-      expect(ctrl.feedbackReport?.sentiment, Sentiment.mixedNegative);
-      expect(ctrl.feedbackReport?.offer, contains('SORRY10'));
-      expect(
-        issueService.lastRequest?.labels,
-        contains('sentiment:mixed_negative'),
-      );
-      expect(
-        issueService.lastRequest?.body,
-        contains('Seat map is good, checkout is confusing'),
-      );
-    },
-  );
+    expect(ctrl.state, ReportFlowState.analyzingFeedback);
+    expect(ctrl.agentActivity, 'Agent searching KB');
+
+    finish.complete(FeedbackReport.fromTranscript(ctrl.transcript));
+    await pending;
+
+    expect(ctrl.state, ReportFlowState.feedbackPreview);
+  });
+
+  test('feedback flow uses analyzer output for mixed negative sentiment', () async {
+    final issueService = _FakeIssueService();
+    final ctrl = _controller(
+      recorder: _FakeRecorder(),
+      screenRecorder: _FakeScreenRecorder(),
+      issueService: issueService,
+      transcript: 'I love the seat map but checkout is still confusing.',
+      analyzeFeedback: (transcript, pcmData, onProgress) async =>
+          FeedbackReport.fromJson({
+            'summary': 'Seat map is good, checkout is confusing',
+            'sentiment': 'mixed_negative',
+            'sentiment_score': 0.36,
+            'sentiment_confidence': 0.88,
+            'category': 'Checkout & Payment',
+            'themes': ['seat map', 'checkout'],
+            'pain_points': ['checkout is confusing'],
+            'requested_outcome': 'Make checkout clearer',
+            'emotional_tone': 'mixed',
+            'actionable_insight': 'Review checkout labels and fee copy.',
+            'offer_eligible': true,
+          }, plainTranscript: transcript).withResolution(
+            FeedbackResolution(
+              summary:
+                  'Matched "Coupon discount disappears after returning to checkout" in the local support knowledge base.',
+              customerSteps: const ['Reapply the promo code before payment.'],
+              teamActions: const [
+                'Persist applied promotion state across checkout route transitions.',
+              ],
+              matches: [
+                FeedbackKbMatch(
+                  article: FeedbackKbArticle.fromMarkdown(
+                    sourcePath: 'assets/kb/checkout-coupon-disappears.md',
+                    markdown: '''---
+id: checkout-coupon-disappears
+title: Coupon discount disappears after returning to checkout
+category: Checkout & Payment
+keywords: coupon, discount, checkout
+---
+
+# Coupon discount disappears after returning to checkout
+
+## Customer Steps
+1. Reapply the promo code before payment.
+
+## Team Action
+Persist applied promotion state across checkout route transitions.
+
+## Engineering Signal
+Quote refresh drops promotion metadata.
+''',
+                  ),
+                  score: 12,
+                  matchedTerms: const ['checkout'],
+                ),
+              ],
+            ),
+          ),
+    );
+
+    ctrl.openChooser();
+    await ctrl.chooseFeedback();
+    await ctrl.finishFeedback();
+    await ctrl.submit();
+
+    expect(ctrl.feedbackReport?.sentiment, Sentiment.mixedNegative);
+    expect(ctrl.feedbackReport?.offer, contains('SORRY10'));
+    expect(
+      issueService.lastRequest?.labels,
+      contains('sentiment:mixed_negative'),
+    );
+    expect(
+      issueService.lastRequest?.body,
+      contains('Seat map is good, checkout is confusing'),
+    );
+    expect(issueService.lastRequest?.body, contains('Local KB Resolution'));
+    expect(
+      issueService.lastRequest?.body,
+      contains('Coupon discount disappears after returning to checkout'),
+    );
+    expect(
+      issueService.lastRequest?.body,
+      contains('Persist applied promotion state'),
+    );
+  });
 
   test('repro flow records video path and builds steps', () async {
     final screenRecorder = _FakeScreenRecorder()..nextPath = '/tmp/repro.mp4';

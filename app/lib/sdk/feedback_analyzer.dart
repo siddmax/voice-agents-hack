@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 
 import '../cactus/engine.dart';
+import 'feedback_kb.dart';
 
 enum Sentiment { positive, neutral, mixedNegative, negative }
 
@@ -75,6 +76,7 @@ class FeedbackReport {
   final bool complaintsPresent;
   final bool requestPresent;
   final String? offer;
+  final FeedbackResolution? resolution;
 
   FeedbackReport({
     required this.plainTranscript,
@@ -93,9 +95,33 @@ class FeedbackReport {
     this.complaintsPresent = false,
     this.requestPresent = false,
     this.offer,
+    this.resolution,
   });
 
   bool get offerCoupon => offer != null && offer!.isNotEmpty;
+  bool get hasResolution => resolution?.isNotEmpty == true;
+
+  FeedbackReport withResolution(FeedbackResolution? nextResolution) {
+    return FeedbackReport(
+      plainTranscript: plainTranscript,
+      summary: summary,
+      sentiment: sentiment,
+      sentimentScore: sentimentScore,
+      sentimentConfidence: sentimentConfidence,
+      category: category,
+      themes: themes,
+      painPoints: painPoints,
+      requestedOutcome: requestedOutcome,
+      emotionalTone: emotionalTone,
+      actionableInsight: actionableInsight,
+      evidence: evidence,
+      praisePresent: praisePresent,
+      complaintsPresent: complaintsPresent,
+      requestPresent: requestPresent,
+      offer: offer,
+      resolution: nextResolution,
+    );
+  }
 
   factory FeedbackReport.fromJson(
     Map<String, dynamic> json, {
@@ -1019,8 +1045,14 @@ class BugReproReport {
 
 class FeedbackAnalyzer {
   final CactusEngine engine;
+  final FeedbackKnowledgeBase knowledgeBase;
+  final bool enableNativeRag;
 
-  FeedbackAnalyzer(this.engine);
+  FeedbackAnalyzer(
+    this.engine, {
+    FeedbackKnowledgeBase? knowledgeBase,
+    this.enableNativeRag = false,
+  }) : knowledgeBase = knowledgeBase ?? FeedbackKnowledgeBase.bundled();
 
   static const _feedbackSchema = {
     'type': 'object',
@@ -1146,11 +1178,36 @@ class FeedbackAnalyzer {
   Future<FeedbackReport> analyzeFeedback({
     required String transcript,
     Uint8List? pcmData,
+    void Function(String activity)? onProgress,
   }) async {
+    onProgress?.call('Agent thinking');
+    final initial = FeedbackReport.fromTranscript(transcript);
+    onProgress?.call('Agent searching KB');
+    final kbMatches = await knowledgeBase.search(
+      transcript: transcript,
+      category: initial.category,
+      themes: initial.themes,
+      painPoints: initial.painPoints,
+    );
+    var kbContext = FeedbackKnowledgeBase.renderForPrompt(kbMatches);
+    if (enableNativeRag) {
+      onProgress?.call('Agent using Cactus RAG');
+      final nativeContext = await _nativeRagContext(transcript);
+      if (nativeContext.trim().isNotEmpty) {
+        kbContext = '$kbContext\n\n$nativeContext';
+      }
+    }
     try {
+      onProgress?.call('Agent summarizing');
       final result = await engine.completeJson(
         messages: [
-          {'role': 'user', 'content': _buildFeedbackPrompt(transcript)},
+          {
+            'role': 'user',
+            'content': _buildFeedbackPrompt(
+              transcript: transcript,
+              kbContext: kbContext,
+            ),
+          },
         ],
         schema: _feedbackSchema,
         retries: 2,
@@ -1158,9 +1215,13 @@ class FeedbackAnalyzer {
         temperature: 0.0,
         pcmData: pcmData,
       );
-      return FeedbackReport.fromJson(result, plainTranscript: transcript);
+      final report = FeedbackReport.fromJson(
+        result,
+        plainTranscript: transcript,
+      );
+      return _attachResolution(report, kbMatches);
     } catch (_) {
-      return FeedbackReport.fallback(transcript);
+      return _attachResolution(FeedbackReport.fallback(transcript), kbMatches);
     }
   }
 
@@ -1185,15 +1246,47 @@ class FeedbackAnalyzer {
     }
   }
 
-  String _buildFeedbackPrompt(String transcript) {
+  FeedbackReport _attachResolution(
+    FeedbackReport report,
+    List<FeedbackKbMatch> kbMatches,
+  ) {
+    if (!report.sentiment.offerEligible && !report.complaintsPresent) {
+      return report;
+    }
+    return report.withResolution(knowledgeBase.buildResolution(kbMatches));
+  }
+
+  Future<String> _nativeRagContext(String transcript) async {
+    try {
+      final raw = await engine.ragQuery(
+        query: transcript,
+        topK: 3,
+        timeout: const Duration(seconds: 2),
+      );
+      if (raw.trim().isEmpty) return '';
+      return 'Native Cactus RAG results:\n$raw';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  String _buildFeedbackPrompt({
+    required String transcript,
+    required String kbContext,
+  }) {
     return '''You are converting a user's spoken feedback into a product triage record for a Ticketmaster-like app.
 
 The user took time to report their experience. Preserve what they said faithfully.
-Overstating sentiment can create the wrong customer response; understating frustration can hide real user pain. Base every field only on the transcript.
+Overstating sentiment can create the wrong customer response; understating frustration can hide real user pain. Base sentiment and evidence only on the transcript.
 
 Transcript:
 """
 $transcript
+"""
+
+Relevant local knowledge base articles:
+"""
+$kbContext
 """
 
 Return one JSON object matching the schema.
@@ -1201,6 +1294,7 @@ Return one JSON object matching the schema.
 Rules:
 - Do not rewrite the transcript.
 - Do not invent events, causes, product areas, or user intent.
+- Use the knowledge base only for actionable_insight and requested_outcome. Do not use it as evidence that the user felt something.
 - If evidence is weak, use lower confidence and neutral or mixed_negative sentiment.
 - Sentiment should reflect the user's experience, not politeness.
 - Use "mixed_negative" when the user mentions positives but the actionable takeaway is frustration or a blocker.

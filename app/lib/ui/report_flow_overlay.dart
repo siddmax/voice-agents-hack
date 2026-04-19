@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:video_player/video_player.dart';
 
 import '../sdk/feedback_analyzer.dart';
+import '../sdk/feedback_kb.dart';
 import 'report_flow_controller.dart';
 
 class ReportFlowOverlay extends StatelessWidget {
@@ -46,8 +47,8 @@ class ReportFlowOverlay extends StatelessWidget {
       ReportFlowState.recordingFeedback => _RecordingPanel.feedback(
         controller: controller,
       ),
-      ReportFlowState.analyzingFeedback => const _SpinnerPanel(
-        label: 'Structuring your feedback...',
+      ReportFlowState.analyzingFeedback => _SpinnerPanel(
+        label: controller.agentActivity,
       ),
       ReportFlowState.feedbackPreview => _FeedbackPreview(
         controller: controller,
@@ -55,11 +56,13 @@ class ReportFlowOverlay extends StatelessWidget {
       ReportFlowState.recordingRepro => _RecordingPanel.repro(
         controller: controller,
       ),
-      ReportFlowState.analyzingRepro => const _SpinnerPanel(
-        label: 'Compiling reproduction steps...',
+      ReportFlowState.analyzingRepro => _SpinnerPanel(
+        label: controller.agentActivity,
       ),
       ReportFlowState.reproPreview => _ReproPreview(controller: controller),
-      ReportFlowState.submitting => const _SpinnerPanel(label: 'Submitting...'),
+      ReportFlowState.submitting => _SpinnerPanel(
+        label: controller.agentActivity,
+      ),
       ReportFlowState.done => _DonePanel(controller: controller),
       ReportFlowState.error => _ErrorPanel(controller: controller),
       ReportFlowState.idle => const SizedBox.shrink(),
@@ -402,6 +405,10 @@ class _FeedbackPreview extends StatelessWidget {
                 const SizedBox(height: 14),
                 _OfferCard(offer: report.offer!),
               ],
+              if (report.resolution != null) ...[
+                const SizedBox(height: 14),
+                _ResolutionCard(resolution: report.resolution!),
+              ],
               const SizedBox(height: 14),
               _InfoCard(
                 children: [
@@ -713,6 +720,72 @@ class _OfferCard extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _ResolutionCard extends StatelessWidget {
+  final FeedbackResolution resolution;
+
+  const _ResolutionCard({required this.resolution});
+
+  @override
+  Widget build(BuildContext context) {
+    final primary = resolution.matches.isEmpty
+        ? null
+        : resolution.matches.first.article;
+    return _InfoCard(
+      children: [
+        const Row(
+          children: [
+            Icon(Icons.support_agent, color: Color(0xFF60A5FA), size: 18),
+            SizedBox(width: 8),
+            Text(
+              'Likely fix',
+              style: TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ],
+        ),
+        if (primary != null) ...[
+          const SizedBox(height: 8),
+          Text(
+            primary.title,
+            style: const TextStyle(color: Colors.white70, height: 1.35),
+          ),
+        ],
+        if (resolution.customerSteps.isNotEmpty) ...[
+          const SizedBox(height: 12),
+          const Text(
+            'Try this',
+            style: TextStyle(
+              color: Colors.white38,
+              fontSize: 11,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 1,
+            ),
+          ),
+          const SizedBox(height: 8),
+          ...resolution.customerSteps.map(
+            (step) => Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Text(
+                '- $step',
+                style: const TextStyle(color: Colors.white70, height: 1.35),
+              ),
+            ),
+          ),
+        ],
+        if (resolution.teamActions.isNotEmpty) ...[
+          const SizedBox(height: 10),
+          Text(
+            resolution.teamActions.first,
+            style: const TextStyle(color: Color(0xFF93C5FD), height: 1.35),
+          ),
+        ],
+      ],
     );
   }
 }

@@ -182,10 +182,12 @@ class AgentLoop implements AgentService {
   Future<FeedbackReport> analyzeFeedback(
     String transcript, {
     Uint8List? pcmData,
+    void Function(String activity)? onProgress,
   }) {
     return _feedbackAnalyzer.analyzeFeedback(
       transcript: transcript,
       pcmData: pcmData,
+      onProgress: onProgress,
     );
   }
 

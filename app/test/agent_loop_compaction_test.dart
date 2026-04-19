@@ -57,8 +57,8 @@ class _ScriptedEngine implements CactusEngine {
     void Function(int)? onTokenCount,
     Duration timeout = const Duration(minutes: 3),
   }) async => CactusResponse(
-        rawText: '{"success":true,"response":"","function_calls":[]}',
-      );
+    rawText: '{"success":true,"response":"","function_calls":[]}',
+  );
 
   @override
   Future<List<Map<String, dynamic>>> completeToolCalls({
@@ -114,6 +114,13 @@ class _ScriptedEngine implements CactusEngine {
   }
 
   @override
+  Future<String> ragQuery({
+    required String query,
+    int topK = 5,
+    Duration timeout = const Duration(seconds: 10),
+  }) async => '';
+
+  @override
   Future<Map<String, dynamic>?> completeToolCall({
     required List<Map<String, dynamic>> messages,
     required List<Map<String, dynamic>> tools,
@@ -131,8 +138,7 @@ class _ScriptedEngine implements CactusEngine {
 }
 
 void main() {
-  test('compaction fires and keeps history under threshold across turns',
-      () async {
+  test('compaction fires and keeps history under threshold across turns', () async {
     final tmp = await Directory.systemTemp.createTemp('syndai_compaction_');
     final memory = await Memory.open(dir: tmp);
     final todos = TodoStore();
@@ -144,14 +150,16 @@ void main() {
     );
 
     // Tool that returns a huge blob to bloat history quickly.
-    tools.register(ToolSpec(
-      name: 'big_blob',
-      description: 'returns a big string',
-      inputSchema: const {'type': 'object', 'properties': {}},
-      // Keep under PromptAssembler's 500-token compaction (2000 chars) so the
-      // tool result stays inline in _history and actually inflates it.
-      executor: (args) async => {'blob': 'B' * 1500},
-    ));
+    tools.register(
+      ToolSpec(
+        name: 'big_blob',
+        description: 'returns a big string',
+        inputSchema: const {'type': 'object', 'properties': {}},
+        // Keep under PromptAssembler's 500-token compaction (2000 chars) so the
+        // tool result stays inline in _history and actually inflates it.
+        executor: (args) async => {'blob': 'B' * 1500},
+      ),
+    );
 
     // Build a long JSON script: plan -> repeated big_blob calls -> finish.
     // 15 simulated turns.
@@ -209,8 +217,11 @@ void main() {
     }
 
     // At least one compaction should have fired.
-    expect(engine.completeTextCalls, greaterThanOrEqualTo(1),
-        reason: 'expected compactor to invoke engine.completeText at least once');
+    expect(
+      engine.completeTextCalls,
+      greaterThanOrEqualTo(1),
+      reason: 'expected compactor to invoke engine.completeText at least once',
+    );
 
     // Print (stdout captured by flutter test) before/after for at least one
     // firing event.
@@ -218,17 +229,24 @@ void main() {
     for (var i = 0; i < before.length; i++) {
       if (after[i] < before[i]) firings.add(i);
     }
-    expect(firings.isNotEmpty, isTrue,
-        reason: 'no measurable compaction shrinkage observed');
+    expect(
+      firings.isNotEmpty,
+      isTrue,
+      reason: 'no measurable compaction shrinkage observed',
+    );
     // ignore: avoid_print
     print(
-        'Compaction firings: ${firings.length}; first: before=${before[firings.first]} tokens, after=${after[firings.first]} tokens');
+      'Compaction firings: ${firings.length}; first: before=${before[firings.first]} tokens, after=${after[firings.first]} tokens',
+    );
 
     // After the run, history should be bounded: no post-compaction snapshot
     // exceeds ~ thresholdTokens + one large message of slack.
     for (final a in after) {
-      expect(a, lessThan(compactor.thresholdTokens + 2000),
-          reason: 'post-compaction snapshot exceeded budget: $a');
+      expect(
+        a,
+        lessThan(compactor.thresholdTokens + 2000),
+        reason: 'post-compaction snapshot exceeded budget: $a',
+      );
     }
   });
 }
@@ -249,7 +267,8 @@ class _TrackingCompactor implements MessageListCompactor {
 
   @override
   Future<List<Map<String, dynamic>>> maybeCompact(
-      List<Map<String, dynamic>> messages) async {
+    List<Map<String, dynamic>> messages,
+  ) async {
     final b = TokenCounter.estimate(jsonEncode(messages));
     final out = await inner.maybeCompact(messages);
     final a = TokenCounter.estimate(jsonEncode(out));

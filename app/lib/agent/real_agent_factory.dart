@@ -4,6 +4,7 @@ import 'github_issue_tools.dart';
 import '../cactus/engine.dart';
 import '../mcp/mcp_config.dart';
 import '../mcp/mcp_registry.dart';
+import '../sdk/feedback_kb.dart';
 import 'agent_loop.dart';
 import 'agent_service.dart';
 import 'compaction.dart';
@@ -22,7 +23,21 @@ class RealAgentFactory {
     required List<McpServerConfig> mcpConfigs,
   }) async {
     try {
-      final engine = await CactusEngine.load(modelPath);
+      const enableCactusRag = bool.fromEnvironment('SYNDAI_ENABLE_CACTUS_RAG');
+      final kbDir = enableCactusRag
+          ? await FeedbackKnowledgeBase.ensureBundledCorpusDir()
+          : null;
+      late final CactusEngine engine;
+      try {
+        engine = await CactusEngine.load(
+          modelPath,
+          corpusDir: kbDir?.path,
+          cacheIndex: kbDir != null,
+        );
+      } catch (_) {
+        if (kbDir == null) rethrow;
+        engine = await CactusEngine.load(modelPath);
+      }
       final memory = await Memory.open();
       await memory.refreshInjectedCache();
       final toolResults = ToolResultStore();

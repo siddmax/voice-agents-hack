@@ -71,6 +71,9 @@ class CaptureFlowController extends ChangeNotifier {
   String? _errorMessage;
   String? get errorMessage => _errorMessage;
 
+  String _agentActivity = 'Agent thinking';
+  String get agentActivity => _agentActivity;
+
   String _partialTranscript = '';
   String get partialTranscript => _partialTranscript;
 
@@ -195,10 +198,15 @@ class CaptureFlowController extends ChangeNotifier {
     }
 
     _state = CaptureState.analyzingFeedback;
+    _agentActivity = 'Agent thinking';
     notifyListeners();
 
     _feedbackReport = await feedbackAnalyzer
-        .analyzeFeedback(transcript: _transcript, pcmData: _pcmData)
+        .analyzeFeedback(
+          transcript: _transcript,
+          pcmData: _pcmData,
+          onProgress: _setAgentActivity,
+        )
         .timeout(
           const Duration(seconds: 30),
           onTimeout: () => FeedbackReport.fallback(_transcript),
@@ -221,6 +229,7 @@ class CaptureFlowController extends ChangeNotifier {
     if (_state != CaptureState.feedbackResult) return;
 
     _state = CaptureState.submitting;
+    _agentActivity = 'Agent using GitHub';
     notifyListeners();
 
     try {
@@ -291,6 +300,7 @@ class CaptureFlowController extends ChangeNotifier {
     if (_state != CaptureState.recording) return;
 
     _state = CaptureState.analyzingBugRepro;
+    _agentActivity = 'Agent transcribing';
     _recordingStart = null;
     notifyListeners();
 
@@ -311,6 +321,7 @@ class CaptureFlowController extends ChangeNotifier {
       return;
     }
 
+    _setAgentActivity('Agent summarizing');
     _bugReproReport = await feedbackAnalyzer
         .analyzeBugRepro(transcript: _transcript, pcmData: _pcmData)
         .timeout(
@@ -328,17 +339,20 @@ class CaptureFlowController extends ChangeNotifier {
     }
 
     _state = CaptureState.submitting;
+    _agentActivity = 'Agent using GitHub';
     notifyListeners();
 
     try {
       String? screenshotUrl;
       if (_screenshotBytes != null) {
+        _setAgentActivity('Agent using screenshot upload');
         screenshotUrl = await github.uploadScreenshot(_screenshotBytes!);
       }
 
       final br = _bugReproReport!;
       final body = _formatBugReproBody(br, screenshotUrl);
 
+      _setAgentActivity('Agent using GitHub');
       final submission = await issueService.submit(
         GitHubIssueRequest(
           title: '\u{1F41B} ${br.title}',
@@ -359,6 +373,12 @@ class CaptureFlowController extends ChangeNotifier {
   }
 
   // ── Shared ──────────────────────────────────────────────────────────────
+
+  void _setAgentActivity(String activity) {
+    if (_agentActivity == activity) return;
+    _agentActivity = activity;
+    notifyListeners();
+  }
 
   void updateReport(BugReport updated) {
     _report = updated;
@@ -387,6 +407,7 @@ class CaptureFlowController extends ChangeNotifier {
     _errorMessage = null;
     _partialTranscript = '';
     _transcript = '';
+    _agentActivity = 'Agent thinking';
     _soundLevel = 0.0;
     _screenshotFailed = false;
     _mode = null;
@@ -411,6 +432,7 @@ class CaptureFlowController extends ChangeNotifier {
               .map((e) => '- ${e.polarity} (${e.strength}): "${e.quote}"')
               .join('\n')
         : '- No transcript-bound evidence extracted';
+    final resolutionStr = _formatFeedbackResolution(fb);
 
     return '''## User Feedback (Voice Capture)
 
@@ -435,6 +457,8 @@ $evidenceStr
 ### Actionable Insight
 ${fb.actionableInsight.isNotEmpty ? fb.actionableInsight : 'No specific action recommended.'}
 
+$resolutionStr
+
 ---
 
 <details>
@@ -447,6 +471,36 @@ $_transcript
 ${fb.offerCoupon ? '\n> \u{1F3AB} **Coupon offered:** 10% off next ticket purchase (negative or mixed-negative sentiment detected)\n' : ''}
 ---
 *Feedback captured via voice and analyzed on-device. No raw audio stored.*''';
+  }
+
+  String _formatFeedbackResolution(FeedbackReport fb) {
+    final resolution = fb.resolution;
+    if (resolution == null || !resolution.isNotEmpty) return '';
+    final articles = resolution.matches.isEmpty
+        ? '- None'
+        : resolution.matches
+              .map(
+                (match) =>
+                    '- ${match.article.title} (${match.article.sourcePath})',
+              )
+              .join('\n');
+    final customerSteps = resolution.customerSteps.isEmpty
+        ? '- None'
+        : resolution.customerSteps.map((step) => '- $step').join('\n');
+    final teamActions = resolution.teamActions.isEmpty
+        ? '- None'
+        : resolution.teamActions.map((action) => '- $action').join('\n');
+    return '''### Local KB Resolution
+${resolution.summary}
+
+**Matched articles**
+$articles
+
+**Customer next steps**
+$customerSteps
+
+**Team next steps**
+$teamActions''';
   }
 
   String _formatBugReproBody(BugReproReport br, String? screenshotUrl) {

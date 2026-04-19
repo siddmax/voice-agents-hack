@@ -10,6 +10,7 @@ final class ViewCapturePlugin: NSObject, FlutterPlugin {
   private let captureInterval: Double = 1.0 / 3.0
   private var isWarmed = false
   private var frameCount = 0
+  private let warmUpAttempts = 6
 
   static func register(with registrar: FlutterPluginRegistrar) {
     let channel = FlutterMethodChannel(
@@ -33,11 +34,21 @@ final class ViewCapturePlugin: NSObject, FlutterPlugin {
   }
 
   private func warmUp(result: @escaping FlutterResult) {
-    guard !isWarmed else {
-      result(true)
-      return
-    }
+    DispatchQueue.main.async { [weak self] in
+      guard let self = self else {
+        result(false)
+        return
+      }
 
+      self.startCaptureTimerIfNeeded()
+      self.primeFirstFrame(attemptsRemaining: self.warmUpAttempts) { success in
+        result(success)
+      }
+    }
+  }
+
+  private func startCaptureTimerIfNeeded() {
+    guard captureTimer == nil else { return }
     let timer = DispatchSource.makeTimerSource(queue: .main)
     timer.schedule(deadline: .now(), repeating: captureInterval)
     timer.setEventHandler { [weak self] in
@@ -46,54 +57,142 @@ final class ViewCapturePlugin: NSObject, FlutterPlugin {
     timer.resume()
     captureTimer = timer
     isWarmed = true
-    result(true)
   }
 
-  private func captureFrame() {
-    guard isWarmed else { return }
-    guard let window = UIApplication.shared.connectedScenes
-      .compactMap({ $0 as? UIWindowScene })
-      .flatMap({ $0.windows })
-      .first(where: { $0.isKeyWindow })
-    else { return }
+  private func primeFirstFrame(
+    attemptsRemaining: Int,
+    completion: @escaping (Bool) -> Void
+  ) {
+    captureFrame { [weak self] success in
+      guard let self = self else {
+        completion(false)
+        return
+      }
+      if success {
+        completion(true)
+        return
+      }
+      guard attemptsRemaining > 1 else {
+        completion(false)
+        return
+      }
+      DispatchQueue.main.asyncAfter(deadline: .now() + self.captureInterval) {
+        self.primeFirstFrame(
+          attemptsRemaining: attemptsRemaining - 1,
+          completion: completion
+        )
+      }
+    }
+  }
 
-    let renderer = UIGraphicsImageRenderer(bounds: window.bounds)
-    let image = renderer.image { ctx in
+  private func captureFrame(completion: ((Bool) -> Void)? = nil) {
+    guard Thread.isMainThread else {
+      DispatchQueue.main.async { [weak self] in
+        self?.captureFrame(completion: completion)
+      }
+      return
+    }
+
+    guard isWarmed else {
+      completion?(false)
+      return
+    }
+    guard let window = captureWindow(), !window.bounds.isEmpty else {
+      completion?(false)
+      return
+    }
+
+    let format = UIGraphicsImageRendererFormat.default()
+    format.scale = window.screen.scale
+    let renderer = UIGraphicsImageRenderer(bounds: window.bounds, format: format)
+    let image = renderer.image { _ in
       window.drawHierarchy(in: window.bounds, afterScreenUpdates: false)
     }
 
-    guard let jpeg = image.jpegData(compressionQuality: 0.5) else { return }
+    guard let jpeg = image.jpegData(compressionQuality: 0.5) else {
+      completion?(false)
+      return
+    }
 
     let now = CACurrentMediaTime()
     writerQueue.async { [weak self] in
-      guard let self = self else { return }
+      guard let self = self else {
+        completion?(false)
+        return
+      }
       self.ringBuffer.append((timestamp: now, jpeg: jpeg))
       self.frameCount += 1
       let cutoff = now - self.maxBufferSeconds
       self.ringBuffer.removeAll { $0.timestamp < cutoff }
+      completion?(true)
     }
   }
 
+  private func captureWindow() -> UIWindow? {
+    let scenes = UIApplication.shared.connectedScenes
+      .compactMap { $0 as? UIWindowScene }
+    let activeScenes = scenes.filter { $0.activationState == .foregroundActive }
+    let candidateScenes = activeScenes.isEmpty ? scenes : activeScenes
+    let windows = candidateScenes.flatMap { $0.windows }
+      .filter { !$0.isHidden && $0.alpha > 0 && !$0.bounds.isEmpty }
+
+    return windows.first(where: { $0.isKeyWindow }) ?? windows.last
+  }
+
   private func flush(result: @escaping FlutterResult) {
-    writerQueue.async { [weak self] in
+    snapshotFrames { [weak self] frames in
       guard let self = self else {
         DispatchQueue.main.async { result("") }
         return
       }
-      let frames = self.ringBuffer
-      guard !frames.isEmpty else {
-        DispatchQueue.main.async {
-          result(FlutterError(
-            code: "NO_FRAMES",
-            message: "Ring buffer is empty. No frames were captured.",
-            details: nil
-          ))
-        }
+      if !frames.isEmpty {
+        self.encodeAndReturn(frames: frames, result: result)
         return
       }
-      self.encodeToMP4(frames: frames) { path in
-        DispatchQueue.main.async { result(path) }
+
+      DispatchQueue.main.async {
+        self.startCaptureTimerIfNeeded()
+        self.captureFrame { success in
+          guard success else {
+            self.returnNoFrames(result: result)
+            return
+          }
+          self.snapshotFrames { frames in
+            guard !frames.isEmpty else {
+              self.returnNoFrames(result: result)
+              return
+            }
+            self.encodeAndReturn(frames: frames, result: result)
+          }
+        }
       }
+    }
+  }
+
+  private func snapshotFrames(
+    completion: @escaping ([(timestamp: CFTimeInterval, jpeg: Data)]) -> Void
+  ) {
+    writerQueue.async { [weak self] in
+      completion(self?.ringBuffer ?? [])
+    }
+  }
+
+  private func encodeAndReturn(
+    frames: [(timestamp: CFTimeInterval, jpeg: Data)],
+    result: @escaping FlutterResult
+  ) {
+    encodeToMP4(frames: frames) { path in
+      DispatchQueue.main.async { result(path) }
+    }
+  }
+
+  private func returnNoFrames(result: @escaping FlutterResult) {
+    DispatchQueue.main.async {
+      result(FlutterError(
+        code: "NO_FRAMES",
+        message: "No visible app window was available for video evidence capture.",
+        details: nil
+      ))
     }
   }
 
@@ -109,7 +208,16 @@ final class ViewCapturePlugin: NSObject, FlutterPlugin {
       try? FileManager.default.removeItem(at: outputURL)
     }
 
-    guard let firstImage = UIImage(data: frames[0].jpeg) else {
+    let fps = 3.0
+    var framesToEncode = frames
+    if framesToEncode.count == 1, let onlyFrame = framesToEncode.first {
+      framesToEncode.append((
+        timestamp: onlyFrame.timestamp + (1.0 / fps),
+        jpeg: onlyFrame.jpeg
+      ))
+    }
+
+    guard let firstImage = UIImage(data: framesToEncode[0].jpeg) else {
       completion("")
       return
     }
@@ -151,16 +259,16 @@ final class ViewCapturePlugin: NSObject, FlutterPlugin {
     }
     writer.startSession(atSourceTime: .zero)
 
-    let baseTimestamp = frames[0].timestamp
-    let fps = 3.0
+    let baseTimestamp = framesToEncode[0].timestamp
 
-    for frame in frames {
+    for (index, frame) in framesToEncode.enumerated() {
       autoreleasepool {
         guard let image = UIImage(data: frame.jpeg),
               let cgImage = image.cgImage
         else { return }
 
-        let elapsed = frame.timestamp - baseTimestamp
+        let minimumElapsed = Double(index) / fps
+        let elapsed = max(frame.timestamp - baseTimestamp, minimumElapsed)
         let presentationTime = CMTime(seconds: elapsed, preferredTimescale: CMTimeScale(fps * 600))
 
         while !writerInput.isReadyForMoreMediaData {

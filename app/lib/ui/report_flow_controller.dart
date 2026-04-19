@@ -48,6 +48,7 @@ class ReportFlowController extends ChangeNotifier {
     required Future<FeedbackReport> Function(
       String transcript,
       Uint8List? pcmData,
+      void Function(String activity)? onProgress,
     )
     analyzeFeedback,
     required ReproContext Function() reproContext,
@@ -63,7 +64,11 @@ class ReportFlowController extends ChangeNotifier {
   ScreenRecordingCapture get screenRecorder => _screenRecorder;
   final GitHubIssueService _issueService;
   final Future<String?> Function(Uint8List pcm) _transcribe;
-  final Future<FeedbackReport> Function(String transcript, Uint8List? pcmData)
+  final Future<FeedbackReport> Function(
+    String transcript,
+    Uint8List? pcmData,
+    void Function(String activity)? onProgress,
+  )
   _analyzeFeedback;
   final ReproContext Function() _reproContext;
 
@@ -96,6 +101,9 @@ class ReportFlowController extends ChangeNotifier {
 
   String? _errorMessage;
   String? get errorMessage => _errorMessage;
+
+  String _agentActivity = 'Agent thinking';
+  String get agentActivity => _agentActivity;
 
   StreamSubscription<double>? _levelSub;
   Timer? _maxTimer;
@@ -145,6 +153,7 @@ class ReportFlowController extends ChangeNotifier {
   Future<void> finishFeedback() async {
     if (_state != ReportFlowState.recordingFeedback) return;
     _state = ReportFlowState.analyzingFeedback;
+    _agentActivity = 'Agent transcribing';
     notifyListeners();
 
     final pcm = await _stopAudio();
@@ -156,8 +165,14 @@ class ReportFlowController extends ChangeNotifier {
 
     _transcript = transcript;
     try {
-      _feedbackReport = await _analyzeFeedback(transcript, pcm);
+      _setAgentActivity('Agent thinking');
+      _feedbackReport = await _analyzeFeedback(
+        transcript,
+        pcm,
+        _setAgentActivity,
+      );
     } catch (_) {
+      _setAgentActivity('Agent summarizing');
       _feedbackReport = FeedbackReport.fallback(transcript);
     }
     _state = ReportFlowState.feedbackPreview;
@@ -167,6 +182,7 @@ class ReportFlowController extends ChangeNotifier {
   Future<void> finishBugRepro() async {
     if (_state != ReportFlowState.recordingRepro) return;
     _state = ReportFlowState.analyzingRepro;
+    _agentActivity = 'Agent transcribing';
     notifyListeners();
 
     _maxTimer?.cancel();
@@ -185,6 +201,7 @@ class ReportFlowController extends ChangeNotifier {
 
     final ctx = _reproContext();
     _transcript = transcript;
+    _setAgentActivity('Agent using screen recording');
     _bugReport = BugReproReport.fromEvidence(
       ctx.evidence ??
           BugReproEvidence(
@@ -231,6 +248,7 @@ class ReportFlowController extends ChangeNotifier {
     }
 
     _state = ReportFlowState.submitting;
+    _agentActivity = 'Agent using GitHub';
     notifyListeners();
 
     try {
@@ -254,6 +272,7 @@ class ReportFlowController extends ChangeNotifier {
         String? videoUrl;
         String? uploadNote;
         if (report.videoPath != null) {
+          _setAgentActivity('Agent using video upload');
           videoUrl = await _issueService.uploadVideoFile(report.videoPath!);
           if (videoUrl == null) {
             uploadNote =
@@ -280,6 +299,7 @@ class ReportFlowController extends ChangeNotifier {
           videoUploadNote: uploadNote,
         );
         _bugReport = hydrated;
+        _setAgentActivity('Agent using GitHub');
         final submission = await _issueService.submit(
           GitHubIssueRequest(
             title: 'Bug: ${hydrated.title}',
@@ -295,6 +315,12 @@ class ReportFlowController extends ChangeNotifier {
     } catch (e) {
       _fail('Submission failed: $e');
     }
+    notifyListeners();
+  }
+
+  void _setAgentActivity(String activity) {
+    if (_agentActivity == activity) return;
+    _agentActivity = activity;
     notifyListeners();
   }
 
@@ -388,6 +414,7 @@ class ReportFlowController extends ChangeNotifier {
     _recordingFinishedAt = null;
     _issueUrl = null;
     _errorMessage = null;
+    _agentActivity = 'Agent thinking';
     _amplitude = 0;
   }
 
@@ -407,6 +434,7 @@ class ReportFlowController extends ChangeNotifier {
                     '- ${item.polarity} (${item.strength}): "${item.quote}"',
               )
               .join('\n');
+    final resolution = _formatFeedbackResolution(report);
     return '''## Voice Feedback
 
 **Sentiment:** ${report.sentiment.label}
@@ -435,6 +463,8 @@ ${report.requestedOutcome.isEmpty ? 'Not specified' : report.requestedOutcome}
 ### Actionable Insight
 ${report.actionableInsight}
 
+$resolution
+
 <details>
 <summary>Plain voice transcript</summary>
 
@@ -444,6 +474,36 @@ ${report.plainTranscript}
 
 ---
 *Feedback captured by voice. Transcript and structured feedback sent to GitHub. No raw audio stored.*''';
+  }
+
+  String _formatFeedbackResolution(FeedbackReport report) {
+    final resolution = report.resolution;
+    if (resolution == null || !resolution.isNotEmpty) return '';
+    final articles = resolution.matches.isEmpty
+        ? 'None'
+        : resolution.matches
+              .map(
+                (match) =>
+                    '- ${match.article.title} (${match.article.sourcePath})',
+              )
+              .join('\n');
+    final customerSteps = resolution.customerSteps.isEmpty
+        ? 'None'
+        : resolution.customerSteps.map((step) => '- $step').join('\n');
+    final teamActions = resolution.teamActions.isEmpty
+        ? 'None'
+        : resolution.teamActions.map((action) => '- $action').join('\n');
+    return '''### Local KB Resolution
+${resolution.summary}
+
+**Matched articles**
+$articles
+
+**Customer next steps**
+$customerSteps
+
+**Team next steps**
+$teamActions''';
   }
 
   String _formatBugBody(BugReproReport report, ReproContext context) {

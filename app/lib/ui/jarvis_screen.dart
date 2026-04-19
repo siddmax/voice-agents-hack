@@ -99,17 +99,23 @@ class _JarvisScreenState extends State<JarvisScreen> {
         if (!mounted) return Future.value(null);
         return context.read<ChatController>().transcribe(pcm);
       },
-      analyzeFeedback: (transcript, pcmData) {
+      analyzeFeedback: (transcript, pcmData, onProgress) {
         final chat = _chatRef;
         if (chat != null) {
-          return chat.analyzeFeedback(transcript, pcmData: pcmData);
+          return chat.analyzeFeedback(
+            transcript,
+            pcmData: pcmData,
+            onProgress: onProgress,
+          );
         }
         if (!mounted) {
+          onProgress?.call('Agent summarizing');
           return Future.value(FeedbackReport.fromTranscript(transcript));
         }
         return context.read<ChatController>().analyzeFeedback(
           transcript,
           pcmData: pcmData,
+          onProgress: onProgress,
         );
       },
       reproContext: () => ReproContext(

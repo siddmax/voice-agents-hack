@@ -76,6 +76,7 @@ flutter:
   assets:
     - .env
     - assets/branding/
+    - assets/kb/
     - assets/memory_bootstrap/
     - assets/memory_bootstrap/identity/
     - assets/memory_bootstrap/preferences/

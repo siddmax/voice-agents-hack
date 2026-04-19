@@ -42,6 +42,13 @@ class ViewCaptureRecorder implements ScreenRecordingCapture {
   @override
   Future<bool> start() async {
     _lastError = null;
+    if (!_warmed) {
+      await warmUp();
+    }
+    if (!_warmed) {
+      _lastError ??=
+          'View capture could not capture an initial frame before recording.';
+    }
     _recording = true;
     return true;
   }
@@ -58,9 +65,11 @@ class ViewCaptureRecorder implements ScreenRecordingCapture {
   }
 
   Future<String?> _stopOnce() async {
+    final wasRecording = _recording;
     _recording = false;
-    if (!_warmed) {
-      _lastError = 'Screen recording was not ready. The issue will still include narration and steps.';
+    if (!_warmed && !wasRecording) {
+      _lastError =
+          'Screen recording was not ready. The issue will still include narration and steps.';
       return null;
     }
     try {
@@ -70,6 +79,7 @@ class ViewCaptureRecorder implements ScreenRecordingCapture {
         _lastError = 'View capture flush did not return a file path.';
         return null;
       }
+      _warmed = true;
       return trimmed;
     } catch (e) {
       _lastError = _formatError(e);
@@ -127,6 +137,11 @@ class FakeViewCaptureRecorder implements ScreenRecordingCapture {
 
   @override
   Future<bool> start() async {
+    if (!_warmed) await warmUp();
+    if (!_warmed) {
+      _lastError =
+          'View capture could not capture an initial frame before recording.';
+    }
     _recording = true;
     return true;
   }
@@ -142,11 +157,17 @@ class FakeViewCaptureRecorder implements ScreenRecordingCapture {
   }
 
   Future<String?> _fakeStop() async {
+    final wasRecording = _recording;
     _stopCount++;
     _recording = false;
-    if (!_warmed) {
-      _lastError = 'Screen recording was not ready. The issue will still include narration and steps.';
+    if (!_warmed && !wasRecording) {
+      _lastError =
+          'Screen recording was not ready. The issue will still include narration and steps.';
       return null;
+    }
+    if (!_warmed) {
+      _warmed = nextPath != null;
+      return nextPath;
     }
     if (stopDelay != null) await Future<void>.delayed(stopDelay!);
     return nextPath;

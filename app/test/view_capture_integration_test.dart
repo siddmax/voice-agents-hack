@@ -65,47 +65,88 @@ class _FakeIssueService extends GitHubIssueService {
 }
 
 void main() {
-  test('full bug report flow attaches video when view capture is warmed',
-      () async {
-    final screenRecorder = FakeViewCaptureRecorder()
-      ..nextPath = '/tmp/view_capture.mp4';
-    await screenRecorder.warmUp();
+  test(
+    'full bug report flow attaches video when view capture is warmed',
+    () async {
+      final screenRecorder = FakeViewCaptureRecorder()
+        ..nextPath = '/tmp/view_capture.mp4';
+      await screenRecorder.warmUp();
 
-    final issueService = _FakeIssueService();
+      final issueService = _FakeIssueService();
 
-    final ctrl = ReportFlowController(
-      recorder: _FakeRecorder(),
-      screenRecorder: screenRecorder,
-      issueService: issueService,
-      transcribe: (_) async => 'Tap buy now. The checkout is stuck.',
-      analyzeFeedback: (t, _) async => FeedbackReport.fromTranscript(t),
-      reproContext: () => const ReproContext(
-        selectedSeat: 'Section 105',
-        deviceInfo: '| os | iOS |',
-        log: '{}',
-      ),
-    );
+      final ctrl = ReportFlowController(
+        recorder: _FakeRecorder(),
+        screenRecorder: screenRecorder,
+        issueService: issueService,
+        transcribe: (_) async => 'Tap buy now. The checkout is stuck.',
+        analyzeFeedback: (t, _, onProgress) async {
+          onProgress?.call('Agent summarizing');
+          return FeedbackReport.fromTranscript(t);
+        },
+        reproContext: () => const ReproContext(
+          selectedSeat: 'Section 105',
+          deviceInfo: '| os | iOS |',
+          log: '{}',
+        ),
+      );
 
-    ctrl.openChooser();
-    await ctrl.chooseBugRepro();
-    await ctrl.finishBugRepro();
+      ctrl.openChooser();
+      await ctrl.chooseBugRepro();
+      await ctrl.finishBugRepro();
 
-    expect(ctrl.state, ReportFlowState.reproPreview);
-    expect(ctrl.videoPath, '/tmp/view_capture.mp4');
-    expect(ctrl.bugReport?.videoPath, '/tmp/view_capture.mp4');
+      expect(ctrl.state, ReportFlowState.reproPreview);
+      expect(ctrl.videoPath, '/tmp/view_capture.mp4');
+      expect(ctrl.bugReport?.videoPath, '/tmp/view_capture.mp4');
 
-    await ctrl.submit();
+      await ctrl.submit();
 
-    expect(ctrl.state, ReportFlowState.done);
-    expect(issueService.lastRequest?.body, contains('Status: uploaded'));
-    expect(
-      issueService.lastRequest?.body,
-      contains('https://example.com/repro.mp4'),
-    );
-  });
+      expect(ctrl.state, ReportFlowState.done);
+      expect(issueService.lastRequest?.body, contains('Status: uploaded'));
+      expect(
+        issueService.lastRequest?.body,
+        contains('https://example.com/repro.mp4'),
+      );
+    },
+  );
+
+  test(
+    'bug report flow primes view capture when startup warmUp was skipped',
+    () async {
+      final screenRecorder = FakeViewCaptureRecorder()
+        ..nextPath = '/tmp/lazy_view_capture.mp4';
+      final issueService = _FakeIssueService();
+
+      final ctrl = ReportFlowController(
+        recorder: _FakeRecorder(),
+        screenRecorder: screenRecorder,
+        issueService: issueService,
+        transcribe: (_) async => 'Tap buy now. The checkout is stuck.',
+        analyzeFeedback: (t, _, onProgress) async {
+          onProgress?.call('Agent summarizing');
+          return FeedbackReport.fromTranscript(t);
+        },
+        reproContext: () => const ReproContext(
+          selectedSeat: 'Section 105',
+          deviceInfo: '| os | iOS |',
+          log: '{}',
+        ),
+      );
+
+      ctrl.openChooser();
+      await ctrl.chooseBugRepro();
+      await ctrl.finishBugRepro();
+
+      expect(ctrl.state, ReportFlowState.reproPreview);
+      expect(screenRecorder.isWarmed, isTrue);
+      expect(ctrl.videoPath, '/tmp/lazy_view_capture.mp4');
+      expect(ctrl.bugReport?.videoPath, '/tmp/lazy_view_capture.mp4');
+    },
+  );
 
   test('bug report still submits when view capture is not warmed', () async {
-    final screenRecorder = FakeViewCaptureRecorder()..nextWarmUp = false;
+    final screenRecorder = FakeViewCaptureRecorder()
+      ..nextWarmUp = false
+      ..nextPath = null;
 
     final issueService = _FakeIssueService();
 
@@ -114,7 +155,10 @@ void main() {
       screenRecorder: screenRecorder,
       issueService: issueService,
       transcribe: (_) async => 'Tap buy now. Stuck on spinner.',
-      analyzeFeedback: (t, _) async => FeedbackReport.fromTranscript(t),
+      analyzeFeedback: (t, _, onProgress) async {
+        onProgress?.call('Agent summarizing');
+        return FeedbackReport.fromTranscript(t);
+      },
       reproContext: () => const ReproContext(
         selectedSeat: 'Section 105',
         deviceInfo: '| os | iOS |',
@@ -132,9 +176,6 @@ void main() {
     await ctrl.submit();
 
     expect(ctrl.state, ReportFlowState.done);
-    expect(
-      issueService.lastRequest?.body,
-      contains('upload unavailable'),
-    );
+    expect(issueService.lastRequest?.body, contains('upload unavailable'));
   });
 }

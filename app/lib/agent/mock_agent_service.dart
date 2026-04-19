@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import '../sdk/feedback_analyzer.dart';
+import '../sdk/feedback_kb.dart';
 import 'agent_service.dart';
 
 class MockAgentService implements AgentService {
@@ -206,7 +207,22 @@ class MockAgentService implements AgentService {
   Future<FeedbackReport> analyzeFeedback(
     String transcript, {
     Uint8List? pcmData,
+    void Function(String activity)? onProgress,
   }) async {
-    return FeedbackReport.fromTranscript(transcript);
+    onProgress?.call('Agent thinking');
+    final report = FeedbackReport.fromTranscript(transcript);
+    if (!report.sentiment.offerEligible && !report.complaintsPresent) {
+      return report;
+    }
+    onProgress?.call('Agent searching KB');
+    final kb = FeedbackKnowledgeBase.bundled();
+    final matches = await kb.search(
+      transcript: transcript,
+      category: report.category,
+      themes: report.themes,
+      painPoints: report.painPoints,
+    );
+    onProgress?.call('Agent summarizing');
+    return report.withResolution(kb.buildResolution(matches));
   }
 }

@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:syndai/sdk/view_capture_recorder.dart';
@@ -17,18 +15,18 @@ void main() {
       channel = const MethodChannel('syndai_view_capture');
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(channel, (call) async {
-        log.add(call.method);
-        switch (call.method) {
-          case 'warmUp':
-            return true;
-          case 'flush':
-            return '/tmp/capture.mp4';
-          case 'coolDown':
-            return null;
-          default:
-            return null;
-        }
-      });
+            log.add(call.method);
+            switch (call.method) {
+              case 'warmUp':
+                return true;
+              case 'flush':
+                return '/tmp/capture.mp4';
+              case 'coolDown':
+                return null;
+              default:
+                return null;
+            }
+          });
       recorder = ViewCaptureRecorder();
     });
 
@@ -52,6 +50,14 @@ void main() {
       expect(log, ['warmUp']);
     });
 
+    test('start primes capture when warmUp has not run yet', () async {
+      final result = await recorder.start();
+      expect(result, isTrue);
+      expect(recorder.isRecording, isTrue);
+      expect(recorder.isWarmed, isTrue);
+      expect(log, ['warmUp']);
+    });
+
     test('stop calls flush and returns path', () async {
       await recorder.warmUp();
       await recorder.start();
@@ -61,7 +67,6 @@ void main() {
     });
 
     test('stop without warmUp returns null with error', () async {
-      await recorder.start();
       final path = await recorder.stop();
       expect(path, isNull);
       expect(recorder.lastError, contains('not ready'));
@@ -77,11 +82,14 @@ void main() {
     test('flush error is captured as lastError', () async {
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(channel, (call) async {
-        if (call.method == 'flush') {
-          throw PlatformException(code: 'FLUSH_ERROR', message: 'No frames');
-        }
-        return true;
-      });
+            if (call.method == 'flush') {
+              throw PlatformException(
+                code: 'FLUSH_ERROR',
+                message: 'No frames',
+              );
+            }
+            return true;
+          });
       recorder = ViewCaptureRecorder();
       await recorder.warmUp();
       await recorder.start();
@@ -89,6 +97,32 @@ void main() {
       expect(path, isNull);
       expect(recorder.lastError, contains('No frames'));
     });
+
+    test(
+      'failed start priming still allows best-effort stop fallback',
+      () async {
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(channel, (call) async {
+              log.add(call.method);
+              switch (call.method) {
+                case 'warmUp':
+                  return false;
+                case 'flush':
+                  return '/tmp/fallback.mp4';
+                default:
+                  return null;
+              }
+            });
+        recorder = ViewCaptureRecorder();
+
+        final started = await recorder.start();
+        final path = await recorder.stop();
+
+        expect(started, isTrue);
+        expect(path, '/tmp/fallback.mp4');
+        expect(log, ['warmUp', 'flush']);
+      },
+    );
   });
 
   group('FakeViewCaptureRecorder', () {
@@ -111,10 +145,12 @@ void main() {
     });
 
     test('stop returns null with error when not warmed', () async {
-      final recorder = FakeViewCaptureRecorder();
+      final recorder = FakeViewCaptureRecorder()
+        ..nextWarmUp = false
+        ..nextPath = null;
       await recorder.start();
       expect(await recorder.stop(), isNull);
-      expect(recorder.lastError, contains('not ready'));
+      expect(recorder.lastError, contains('initial frame'));
     });
 
     test('concurrent stop calls are single-flighted', () async {

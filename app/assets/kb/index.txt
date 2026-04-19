@@ -1,0 +1,4 @@
+assets/kb/checkout-coupon-disappears.md
+assets/kb/checkout-fees-confusing.md
+assets/kb/payment-failure.md
+assets/kb/seat-map-stuck.md

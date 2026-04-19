@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:syndai/sdk/capture_flow.dart';
 import 'package:syndai/sdk/feedback_analyzer.dart';
+import 'package:syndai/sdk/feedback_kb.dart';
 import 'package:syndai/sdk/github_client.dart';
 import 'package:syndai/sdk/screenshot_capture.dart';
 import 'package:syndai/voice/audio_recorder.dart';
@@ -505,7 +506,32 @@ void main() {
             'request_present': false,
           },
         ]);
-        final analyzer = FeedbackAnalyzer(engine);
+        final analyzer = FeedbackAnalyzer(
+          engine,
+          knowledgeBase: FeedbackKnowledgeBase.inMemory([
+            FeedbackKbArticle.fromMarkdown(
+              sourcePath: 'assets/kb/checkout-coupon-disappears.md',
+              markdown: '''---
+id: checkout-coupon-disappears
+title: Coupon discount disappears after returning to checkout
+category: Checkout & Payment
+keywords: coupon, discount, checkout, confusing
+---
+
+# Coupon discount disappears after returning to checkout
+
+## Customer Steps
+1. Reapply the promo code before payment.
+
+## Team Action
+Persist applied promotion state across checkout route transitions.
+
+## Engineering Signal
+Checkout route transitions can drop promotion metadata.
+''',
+            ),
+          ]),
+        );
 
         final report = await analyzer.analyzeFeedback(
           transcript: 'I like the seat map, but checkout is confusing.',
@@ -513,9 +539,20 @@ void main() {
 
         expect(report.sentiment, Sentiment.mixedNegative);
         expect(report.offer, FeedbackReport.negativeOffer);
+        expect(report.resolution?.summary, contains('Coupon discount'));
+        expect(
+          report.resolution?.teamActions.first,
+          contains('Persist applied promotion state'),
+        );
+        expect(engine.ragQueryCalls, 0);
         final prompt =
             engine.capturedMessages.single.single['content'] as String;
-        expect(prompt, contains('Base every field only on the transcript'));
+        expect(
+          prompt,
+          contains('Base sentiment and evidence only on the transcript'),
+        );
+        expect(prompt, contains('Relevant local knowledge base articles'));
+        expect(prompt, contains('Coupon discount disappears'));
         expect(prompt, contains('Do not create coupon copy'));
         expect(prompt, contains('Set offer_eligible true only'));
         expect(prompt, contains('Each evidence quote must be copied exactly'));

@@ -136,8 +136,13 @@ class ChatController extends ChangeNotifier {
   Future<FeedbackReport> analyzeFeedback(
     String transcript, {
     Uint8List? pcmData,
+    void Function(String activity)? onProgress,
   }) {
-    return agent.analyzeFeedback(transcript, pcmData: pcmData);
+    return agent.analyzeFeedback(
+      transcript,
+      pcmData: pcmData,
+      onProgress: onProgress,
+    );
   }
 
   @override
