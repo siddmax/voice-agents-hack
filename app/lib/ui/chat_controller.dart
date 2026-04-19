@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../agent/agent_service.dart';
+import '../sdk/feedback_analyzer.dart';
 
 enum MessageRole { user, agent }
 
@@ -69,49 +70,56 @@ class ChatController extends ChangeNotifier {
     messages.add(agentMsg);
     notifyListeners();
 
-    _sub = agent.run(trimmed).listen((evt) {
-      events.add(evt);
-      switch (evt) {
-        case AgentToken(:final text):
-          if (agentMsg.parts.isNotEmpty && agentMsg.parts.last is String) {
-            agentMsg.parts[agentMsg.parts.length - 1] =
-                (agentMsg.parts.last as String) + text;
-          } else {
-            agentMsg.parts.add(text);
-          }
-        case AgentToolCall(:final toolName, :final args):
-          agentMsg.parts.add(ToolCallBubble(toolName, args));
-        case AgentToolResult(:final toolName, :final summary):
-          for (var i = agentMsg.parts.length - 1; i >= 0; i--) {
-            final p = agentMsg.parts[i];
-            if (p is ToolCallBubble &&
-                p.toolName == toolName &&
-                p.resultSummary == null) {
-              p.resultSummary = summary;
-              break;
+    _sub = agent
+        .run(trimmed)
+        .listen(
+          (evt) {
+            events.add(evt);
+            switch (evt) {
+              case AgentToken(:final text):
+                if (agentMsg.parts.isNotEmpty &&
+                    agentMsg.parts.last is String) {
+                  agentMsg.parts[agentMsg.parts.length - 1] =
+                      (agentMsg.parts.last as String) + text;
+                } else {
+                  agentMsg.parts.add(text);
+                }
+              case AgentToolCall(:final toolName, :final args):
+                agentMsg.parts.add(ToolCallBubble(toolName, args));
+              case AgentToolResult(:final toolName, :final summary):
+                for (var i = agentMsg.parts.length - 1; i >= 0; i--) {
+                  final p = agentMsg.parts[i];
+                  if (p is ToolCallBubble &&
+                      p.toolName == toolName &&
+                      p.resultSummary == null) {
+                    p.resultSummary = summary;
+                    break;
+                  }
+                }
+              case AgentTodoUpdate(:final todos):
+                this.todos = todos;
+              case AgentThinking():
+                // Transient — UI renders from the events list; no controller state.
+                break;
+              case AgentFinished(:final summary):
+                _lastFinishedSummary = summary;
+              case AgentError():
+                // Surfaces in the activity feed via events; nothing else to track.
+                break;
             }
-          }
-        case AgentTodoUpdate(:final todos):
-          this.todos = todos;
-        case AgentThinking():
-          // Transient — UI renders from the events list; no controller state.
-          break;
-        case AgentFinished(:final summary):
-          _lastFinishedSummary = summary;
-        case AgentError():
-          // Surfaces in the activity feed via events; nothing else to track.
-          break;
-      }
-      notifyListeners();
-    }, onDone: () {
-      _running = false;
-      notifyListeners();
-    }, onError: (e, st) {
-      agentMsg.parts.add('\n\n[error: $e]');
-      events.add(AgentError(e.toString()));
-      _running = false;
-      notifyListeners();
-    });
+            notifyListeners();
+          },
+          onDone: () {
+            _running = false;
+            notifyListeners();
+          },
+          onError: (e, st) {
+            agentMsg.parts.add('\n\n[error: $e]');
+            events.add(AgentError(e.toString()));
+            _running = false;
+            notifyListeners();
+          },
+        );
   }
 
   Future<void> cancel() async {
@@ -124,6 +132,13 @@ class ChatController extends ChangeNotifier {
   }
 
   Future<String?> transcribe(Uint8List pcm) => agent.transcribe(pcm);
+
+  Future<FeedbackReport> analyzeFeedback(
+    String transcript, {
+    Uint8List? pcmData,
+  }) {
+    return agent.analyzeFeedback(transcript, pcmData: pcmData);
+  }
 
   @override
   Future<void> dispose() async {

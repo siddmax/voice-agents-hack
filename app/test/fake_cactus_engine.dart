@@ -10,6 +10,7 @@ class FakeCactusEngine implements CactusEngine {
   double? nextConfidence;
   bool nextCloudHandoff = false;
   String? nextThinking;
+  String? nextRaw;
 
   FakeCactusEngine(this.jsonResponses);
 
@@ -19,8 +20,7 @@ class FakeCactusEngine implements CactusEngine {
     List<Map<String, dynamic>>? tools,
     int maxTokens = 512,
     double temperature = 0.2,
-  }) async =>
-      '';
+  }) async => '';
 
   @override
   Future<String> completeRaw({
@@ -35,6 +35,7 @@ class FakeCactusEngine implements CactusEngine {
     Duration timeout = const Duration(minutes: 3),
   }) async {
     capturedMessages.add(messages);
+    if (nextRaw != null) return nextRaw!;
     return '{"success":true,"response":"","function_calls":[],'
         '"confidence":${nextConfidence ?? 0.85},'
         '"cloud_handoff":$nextCloudHandoff}';

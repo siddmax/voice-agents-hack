@@ -6,14 +6,17 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../agent/agent_service.dart';
-import '../agent/mock_agent_service.dart';
+import '../sdk/feedback_analyzer.dart';
 import '../sdk/github_issue_service.dart';
+import '../sdk/screen_recording_capture.dart';
 import '../voice/audio_recorder.dart';
 import '../voice/tts.dart';
 import 'activity_feed.dart';
 import 'app_settings.dart';
 import 'chat_controller.dart';
 import 'jarvis_orb.dart';
+import 'report_flow_controller.dart';
+import 'report_flow_overlay.dart';
 import 'settings_sheet.dart';
 
 const _demoTranscript =
@@ -35,12 +38,14 @@ class JarvisScreen extends StatefulWidget {
   final String? startupError;
   final GitHubIssueService? githubIssueService;
   final PcmCapture? recorder;
+  final ScreenRecordingCapture? screenRecorder;
 
   const JarvisScreen({
     super.key,
     this.startupError,
     this.githubIssueService,
     this.recorder,
+    this.screenRecorder,
   });
 
   @override
@@ -60,20 +65,48 @@ class _JarvisScreenState extends State<JarvisScreen> {
   String _selectedSeatId = _seatOptions.first.id;
   bool _captureGranted = false;
   bool _showWaveform = false;
-  bool _spinnerStuck = false;
-  int _selectionAttempts = 0;
   bool _submittingIssue = false;
   String? _issueUrl;
   bool _showSuccess = false;
   bool _completingListening = false;
   late final GitHubIssueService _githubIssueService;
   late final PcmCapture _recorder;
+  late final ReportFlowController _reportFlow;
 
   @override
   void initState() {
     super.initState();
     _githubIssueService = widget.githubIssueService ?? GitHubIssueService();
     _recorder = widget.recorder ?? PcmRecorder();
+    _reportFlow = ReportFlowController(
+      recorder: _recorder,
+      screenRecorder: widget.screenRecorder ?? NativeScreenRecordingCapture(),
+      issueService: _githubIssueService,
+      transcribe: (pcm) {
+        final chat = _chatRef;
+        if (chat != null) return chat.transcribe(pcm);
+        if (!mounted) return Future.value(null);
+        return context.read<ChatController>().transcribe(pcm);
+      },
+      analyzeFeedback: (transcript, pcmData) {
+        final chat = _chatRef;
+        if (chat != null) {
+          return chat.analyzeFeedback(transcript, pcmData: pcmData);
+        }
+        if (!mounted) {
+          return Future.value(FeedbackReport.fromTranscript(transcript));
+        }
+        return context.read<ChatController>().analyzeFeedback(
+          transcript,
+          pcmData: pcmData,
+        );
+      },
+      reproContext: () => ReproContext(
+        selectedSeat: _selectedSeatLabel(),
+        deviceInfo: _demoDeviceInfo,
+        log: _demoLog,
+      ),
+    );
     if (widget.startupError != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
@@ -230,14 +263,13 @@ class _JarvisScreenState extends State<JarvisScreen> {
   void dispose() {
     _levelSub?.cancel();
     _chatRef?.removeListener(_onChatChanged);
+    _reportFlow.dispose();
     _recorder.dispose();
     super.dispose();
   }
 
   Future<void> _onAgentTap() async {
     final chat = context.read<ChatController>();
-    final messenger = ScaffoldMessenger.of(context);
-
     if (chat.running) {
       await chat.cancel();
       if (!mounted) return;
@@ -247,57 +279,16 @@ class _JarvisScreenState extends State<JarvisScreen> {
       });
       return;
     }
-
-    if (_orb == OrbState.listening) {
-      await _completeListeningAndAnalyze();
-      return;
-    }
-
-    if (chat.agent is MockAgentService) {
-      messenger.showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Voice capture needs the on-device model to finish loading. Open Settings to confirm Gemma 4 is loaded.',
-          ),
-        ),
-      );
-      return;
-    }
-
     chat.clearSession();
     _autoSubmitting = false;
-
-    final started = await _recorder.startRecording();
-    if (!mounted) return;
-
-    if (!started) {
-      setState(() {
-        _amplitude = 0;
-        _orb = OrbState.idle;
-        _showWaveform = false;
-        _captureGranted = false;
-        _showSuccess = false;
-        _transcriptDraft = '';
-      });
-      messenger.showSnackBar(
-        const SnackBar(
-          content: Text('Microphone permission is disabled or unavailable.'),
-        ),
-      );
-      return;
-    }
-
-    _levelSub = _recorder.amplitude.listen((level) {
-      if (!mounted) return;
-      setState(() => _amplitude = level);
-    });
     setState(() {
-      _orb = OrbState.listening;
-      _showWaveform = true;
+      _orb = OrbState.idle;
+      _showWaveform = false;
       _captureGranted = false;
       _showSuccess = false;
-      _transcriptDraft = 'Listening...';
+      _transcriptDraft = '';
     });
+    _reportFlow.openChooser();
   }
 
   Future<void> _completeListeningAndAnalyze([String? _]) async {
@@ -399,7 +390,6 @@ class _JarvisScreenState extends State<JarvisScreen> {
   Future<void> _onSeatTap(_SeatOption seat) async {
     setState(() {
       _selectedSeatId = seat.id;
-      _selectionAttempts += 1;
     });
 
     if (!mounted) return;
@@ -407,18 +397,15 @@ class _JarvisScreenState extends State<JarvisScreen> {
       MaterialPageRoute(
         builder: (_) => _CheckoutPage(
           seat: seat,
+          reportFlow: _reportFlow,
           onAgentActivate: () async {
-            // Triggers agent from checkout page — pops first then activates
+            Navigator.of(context).pop();
+            await Future<void>.delayed(const Duration(milliseconds: 120));
             if (mounted) await _onAgentTap();
           },
         ),
       ),
     );
-
-    // After returning from checkout, mark spinner stuck if it was the featured seat
-    if (seat.highlighted && mounted) {
-      setState(() => _spinnerStuck = true);
-    }
   }
 
   Future<void> _submitIssue() async {
@@ -524,8 +511,6 @@ Selecting the ticket should open checkout immediately.
       _selectedSeatId = _seatOptions.first.id;
       _captureGranted = false;
       _showWaveform = false;
-      _spinnerStuck = false;
-      _selectionAttempts = 0;
       _submittingIssue = false;
       _issueUrl = null;
       _showSuccess = false;
@@ -550,14 +535,8 @@ Selecting the ticket should open checkout immediately.
                 Expanded(
                   child: Column(
                     children: [
-                      _VenueMapStrip(
-                        selectedSeat: _selectedSeatLabel(),
-                        spinnerStuck: _spinnerStuck,
-                      ),
-                      _FilterRail(
-                        attempts: _selectionAttempts,
-                        spinnerStuck: _spinnerStuck,
-                      ),
+                      _VenueMapStrip(selectedSeat: _selectedSeatLabel()),
+                      const _FilterRail(),
                       if (!_githubIssueService.isReady)
                         _GitHubReadinessBanner(
                           message: _githubIssueService.readinessMessage,
@@ -579,7 +558,6 @@ Selecting the ticket should open checkout immediately.
                         child: _SeatListCard(
                           seats: _seatOptions,
                           selectedSeatId: _selectedSeatId,
-                          spinnerStuck: _spinnerStuck,
                           onSeatTap: _onSeatTap,
                         ),
                       ),
@@ -623,6 +601,7 @@ Selecting the ticket should open checkout immediately.
                   onDismiss: _resetDemo,
                 ),
               ),
+            ReportFlowOverlay(controller: _reportFlow),
           ],
         ),
       ),
@@ -828,12 +807,8 @@ class _TopTab extends StatelessWidget {
 
 class _VenueMapStrip extends StatelessWidget {
   final String selectedSeat;
-  final bool spinnerStuck;
 
-  const _VenueMapStrip({
-    required this.selectedSeat,
-    required this.spinnerStuck,
-  });
+  const _VenueMapStrip({required this.selectedSeat});
 
   @override
   Widget build(BuildContext context) {
@@ -877,16 +852,12 @@ class _VenueMapStrip extends StatelessWidget {
             height: 110,
             child: AspectRatio(
               aspectRatio: 1.35,
-              child: CustomPaint(
-                painter: _MiniArenaPainter(highlighted: spinnerStuck),
-              ),
+              child: CustomPaint(painter: _MiniArenaPainter()),
             ),
           ),
           const SizedBox(height: 10),
           Text(
-            spinnerStuck
-                ? '$selectedSeat is hanging before checkout completes.'
-                : '$selectedSeat is selected for the scripted checkout path.',
+            '$selectedSeat is selected for the scripted checkout path.',
             style: const TextStyle(
               color: Color(0xFF4B5563),
               fontWeight: FontWeight.w600,
@@ -899,16 +870,11 @@ class _VenueMapStrip extends StatelessWidget {
 }
 
 class _MiniArenaPainter extends CustomPainter {
-  final bool highlighted;
-
-  _MiniArenaPainter({required this.highlighted});
-
   @override
   void paint(Canvas canvas, Size size) {
     final center = Offset(size.width / 2, size.height / 2);
     final basePaint = Paint()..color = const Color(0xFFD1D5DB);
-    final accentPaint = Paint()
-      ..color = highlighted ? const Color(0xFF2563EB) : const Color(0xFF93C5FD);
+    final accentPaint = Paint()..color = const Color(0xFF93C5FD);
     final stagePaint = Paint()..color = const Color(0xFF111111);
 
     final rect = Rect.fromCenter(
@@ -955,15 +921,11 @@ class _MiniArenaPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant _MiniArenaPainter oldDelegate) =>
-      oldDelegate.highlighted != highlighted;
+  bool shouldRepaint(covariant _MiniArenaPainter oldDelegate) => false;
 }
 
 class _FilterRail extends StatelessWidget {
-  final int attempts;
-  final bool spinnerStuck;
-
-  const _FilterRail({required this.attempts, required this.spinnerStuck});
+  const _FilterRail();
 
   @override
   Widget build(BuildContext context) {
@@ -982,11 +944,9 @@ class _FilterRail extends StatelessWidget {
               ),
               child: Row(
                 children: [
-                  Text(
-                    spinnerStuck
-                        ? '2 Tickets · Retry ${math.max(attempts, 1)}'
-                        : '2 Tickets',
-                    style: const TextStyle(
+                  const Text(
+                    '2 Tickets',
+                    style: TextStyle(
                       color: Color(0xFF374151),
                       fontWeight: FontWeight.w700,
                     ),
@@ -1030,13 +990,11 @@ class _FilterRail extends StatelessWidget {
 class _SeatListCard extends StatelessWidget {
   final List<_SeatOption> seats;
   final String selectedSeatId;
-  final bool spinnerStuck;
   final ValueChanged<_SeatOption> onSeatTap;
 
   const _SeatListCard({
     required this.seats,
     required this.selectedSeatId,
-    required this.spinnerStuck,
     required this.onSeatTap,
   });
 
@@ -1058,7 +1016,6 @@ class _SeatListCard extends StatelessWidget {
           return _SeatTile(
             seat: seat,
             selected: seat.id == selectedSeatId,
-            loading: seat.highlighted && spinnerStuck,
             onTap: () => onSeatTap(seat),
           );
         },
@@ -1070,13 +1027,11 @@ class _SeatListCard extends StatelessWidget {
 class _SeatTile extends StatelessWidget {
   final _SeatOption seat;
   final bool selected;
-  final bool loading;
   final VoidCallback onTap;
 
   const _SeatTile({
     required this.seat,
     required this.selected,
-    required this.loading,
     required this.onTap,
   });
 
@@ -1103,7 +1058,7 @@ class _SeatTile extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    if (seat.highlighted && !loading)
+                    if (seat.highlighted)
                       Container(
                         margin: const EdgeInsets.only(bottom: 8),
                         padding: const EdgeInsets.symmetric(
@@ -1134,11 +1089,9 @@ class _SeatTile extends StatelessWidget {
                     ),
                     const SizedBox(height: 2),
                     Text(
-                      loading
-                          ? 'Checkout is stuck on a spinner after seat selection.'
-                          : (seat.highlighted
-                                ? 'VIP LOUNGE PACKAGE'
-                                : 'Verified Resale Ticket'),
+                      seat.highlighted
+                          ? 'VIP LOUNGE PACKAGE'
+                          : 'Verified Resale Ticket',
                       style: const TextStyle(
                         color: Color(0xFF6B7280),
                         fontSize: 14,
@@ -1148,20 +1101,14 @@ class _SeatTile extends StatelessWidget {
                 ),
               ),
               const SizedBox(width: 12),
-              loading
-                  ? const SizedBox(
-                      width: 30,
-                      height: 30,
-                      child: CircularProgressIndicator(strokeWidth: 2.5),
-                    )
-                  : Text(
-                      seat.price,
-                      style: const TextStyle(
-                        color: Color(0xFF2563EB),
-                        fontWeight: FontWeight.w800,
-                        fontSize: 18,
-                      ),
-                    ),
+              Text(
+                seat.price,
+                style: const TextStyle(
+                  color: Color(0xFF2563EB),
+                  fontWeight: FontWeight.w800,
+                  fontSize: 18,
+                ),
+              ),
             ],
           ),
         ),
@@ -1257,13 +1204,16 @@ class _StatusCard extends StatelessWidget {
 // Checkout page
 // ---------------------------------------------------------------------------
 
-enum _AgentPhase { idle, listening, confirming, requesting }
-
 class _CheckoutPage extends StatefulWidget {
   final _SeatOption seat;
+  final ReportFlowController reportFlow;
   final VoidCallback onAgentActivate;
 
-  const _CheckoutPage({required this.seat, required this.onAgentActivate});
+  const _CheckoutPage({
+    required this.seat,
+    required this.reportFlow,
+    required this.onAgentActivate,
+  });
 
   @override
   State<_CheckoutPage> createState() => _CheckoutPageState();
@@ -1271,13 +1221,6 @@ class _CheckoutPage extends StatefulWidget {
 
 class _CheckoutPageState extends State<_CheckoutPage> {
   bool _buying = false;
-  _AgentPhase _phase = _AgentPhase.idle;
-  String _partial = '';
-  String _confirmed = '';
-  double _amplitude = 0;
-  bool _recordingStarted = false;
-  StreamSubscription<double>? _levelSub;
-  final PcmRecorder _recorder = PcmRecorder();
 
   // ── Buy flow ──────────────────────────────────────────────────────────────
 
@@ -1306,112 +1249,11 @@ class _CheckoutPageState extends State<_CheckoutPage> {
     );
   }
 
-  // ── Agent flow ────────────────────────────────────────────────────────────
-
-  Future<void> _startListening() async {
-    final tts = context.read<TextToSpeechService>();
-    setState(() {
-      _phase = _AgentPhase.listening;
-      _partial = '';
-      _recordingStarted = false;
-    });
-
-    // Start recording immediately so TTS audio doesn't block it.
-    // Speak greeting in parallel — recording captures after TTS finishes.
-    final started = await _recorder.startRecording();
-    if (!mounted) return;
-
-    if (!started) {
-      setState(() {
-        _confirmed = _demoTranscript;
-        _phase = _AgentPhase.confirming;
-      });
-      return;
-    }
-
-    setState(() => _recordingStarted = true);
-    _levelSub = _recorder.amplitude.listen((level) {
-      if (mounted) setState(() => _amplitude = level);
-    });
-
-    unawaited(tts.speak("Hi, I'm Syndai. Tell me what went wrong."));
-  }
-
-  Future<void> _stopListening() async {
-    if (!_recordingStarted) return;
-    await _levelSub?.cancel();
-    _levelSub = null;
-
-    if (mounted) {
-      setState(() {
-        _amplitude = 0;
-        _confirmed = 'Transcribing...';
-        _phase = _AgentPhase.confirming;
-      });
-    }
-
-    final pcm = await _recorder.stopAndGetPcm();
-    if (!mounted) return;
-
-    if (pcm == null || pcm.isEmpty) {
-      setState(() => _confirmed = _demoTranscript);
-      return;
-    }
-
-    final chat = context.read<ChatController>();
-    final result = await chat.transcribe(pcm);
-    if (!mounted) return;
-
-    setState(() {
-      _confirmed = (result == null || result.trim().isEmpty)
-          ? _demoTranscript
-          : result.trim();
-    });
-  }
-
-  void _onConfirm() => setState(() => _phase = _AgentPhase.requesting);
-
-  void _onRetake() {
-    setState(() {
-      _phase = _AgentPhase.idle;
-      _partial = '';
-      _confirmed = '';
-      _recordingStarted = false;
-    });
-  }
-
-  void _onAllow() {
-    Navigator.of(context).pop();
-    widget.onAgentActivate();
-  }
-
-  void _onDismiss() {
-    _levelSub?.cancel();
-    _levelSub = null;
-    _recorder.cancel();
-    setState(() {
-      _phase = _AgentPhase.idle;
-      _partial = '';
-      _confirmed = '';
-      _amplitude = 0;
-      _recordingStarted = false;
-    });
-  }
-
-  @override
-  void dispose() {
-    _levelSub?.cancel();
-    _recorder.dispose();
-    super.dispose();
-  }
-
   // ── Build ─────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
     final seat = widget.seat;
-    final panelVisible = _phase != _AgentPhase.idle;
-
     return Scaffold(
       backgroundColor: const Color(0xFFF3F4F6),
       body: SafeArea(
@@ -1570,37 +1412,16 @@ class _CheckoutPageState extends State<_CheckoutPage> {
             ),
 
             // ── Syndai Agent FAB (hidden while panel is open) ────────────
-            if (!panelVisible)
-              Positioned(
-                bottom: 24,
-                right: 16,
-                child: _ActivateBar(
-                  listening: false,
-                  running: false,
-                  onTap: _startListening,
-                ),
-              ),
-
-            // ── Agent panel ───────────────────────────────────────────────
-            AnimatedPositioned(
-              duration: const Duration(milliseconds: 320),
-              curve: Curves.easeOutCubic,
-              left: 0,
-              right: 0,
-              bottom: panelVisible ? 0 : -420,
-              child: _AgentPanel(
-                phase: _phase,
-                partial: _partial,
-                confirmed: _confirmed,
-                amplitude: _amplitude,
-                recordingStarted: _recordingStarted,
-                onStop: _stopListening,
-                onConfirm: _onConfirm,
-                onRetake: _onRetake,
-                onAllow: _onAllow,
-                onDismiss: _onDismiss,
+            Positioned(
+              bottom: 24,
+              right: 16,
+              child: _ActivateBar(
+                listening: false,
+                running: false,
+                onTap: widget.onAgentActivate,
               ),
             ),
+            ReportFlowOverlay(controller: widget.reportFlow),
           ],
         ),
       ),
@@ -1658,431 +1479,6 @@ class _CheckoutTopBar extends StatelessWidget {
           ),
         ],
       ),
-    );
-  }
-}
-
-// ── Agent bottom panel ────────────────────────────────────────────────────────
-
-class _AgentPanel extends StatelessWidget {
-  final _AgentPhase phase;
-  final String partial;
-  final String confirmed;
-  final double amplitude;
-  final bool recordingStarted;
-  final VoidCallback onStop;
-  final VoidCallback onConfirm;
-  final VoidCallback onRetake;
-  final VoidCallback onAllow;
-  final VoidCallback onDismiss;
-
-  const _AgentPanel({
-    required this.phase,
-    required this.partial,
-    required this.confirmed,
-    required this.amplitude,
-    required this.recordingStarted,
-    required this.onStop,
-    required this.onConfirm,
-    required this.onRetake,
-    required this.onAllow,
-    required this.onDismiss,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      decoration: const BoxDecoration(
-        color: Color(0xFF0F172A),
-        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black45,
-            blurRadius: 32,
-            offset: Offset(0, -4),
-          ),
-        ],
-      ),
-      padding: const EdgeInsets.fromLTRB(24, 14, 24, 36),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          // Drag handle
-          Container(
-            width: 40,
-            height: 4,
-            decoration: BoxDecoration(
-              color: Colors.white24,
-              borderRadius: BorderRadius.circular(999),
-            ),
-          ),
-          const SizedBox(height: 22),
-          if (phase == _AgentPhase.listening)
-            _ListeningContent(
-              partial: partial,
-              amplitude: amplitude,
-              recordingStarted: recordingStarted,
-              onStop: onStop,
-              onDismiss: onDismiss,
-            ),
-          if (phase == _AgentPhase.confirming)
-            _ConfirmingContent(
-              confirmed: confirmed,
-              onConfirm: onConfirm,
-              onRetake: onRetake,
-            ),
-          if (phase == _AgentPhase.requesting)
-            _RequestingContent(onAllow: onAllow, onDismiss: onDismiss),
-        ],
-      ),
-    );
-  }
-}
-
-class _ListeningContent extends StatelessWidget {
-  final String partial;
-  final double amplitude;
-  final bool recordingStarted;
-  final VoidCallback onStop;
-  final VoidCallback onDismiss;
-
-  const _ListeningContent({
-    required this.partial,
-    required this.amplitude,
-    required this.recordingStarted,
-    required this.onStop,
-    required this.onDismiss,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            Container(
-              width: 10,
-              height: 10,
-              decoration: const BoxDecoration(
-                color: Color(0xFF22C55E),
-                shape: BoxShape.circle,
-              ),
-            ),
-            const SizedBox(width: 8),
-            const Text(
-              'Listening...',
-              style: TextStyle(color: Colors.white70, fontSize: 13),
-            ),
-            const Spacer(),
-            GestureDetector(
-              onTap: onDismiss,
-              child: const Icon(Icons.close, color: Colors.white38, size: 20),
-            ),
-          ],
-        ),
-        const SizedBox(height: 14),
-        // Greeting
-        const Text(
-          "Hi, I'm Syndai. Tell me what went wrong.",
-          style: TextStyle(
-            color: Colors.white,
-            fontWeight: FontWeight.w700,
-            fontSize: 16,
-            height: 1.4,
-          ),
-        ),
-        const SizedBox(height: 14),
-        _LiveWaveformBars(amplitude: amplitude),
-        const SizedBox(height: 14),
-        // Live transcript — current line only
-        Container(
-          width: double.infinity,
-          padding: const EdgeInsets.all(14),
-          decoration: BoxDecoration(
-            color: Colors.white.withValues(alpha: 0.06),
-            borderRadius: BorderRadius.circular(14),
-          ),
-          child: Text(
-            partial.isEmpty ? 'Speak now...' : partial,
-            style: TextStyle(
-              color: partial.isEmpty ? Colors.white24 : Colors.white,
-              fontSize: 15,
-              height: 1.4,
-            ),
-          ),
-        ),
-        const SizedBox(height: 20),
-        SizedBox(
-          width: double.infinity,
-          child: ElevatedButton(
-            onPressed: recordingStarted ? onStop : null,
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF16A34A),
-              disabledBackgroundColor: const Color(0xFF16A34A).withValues(alpha: 0.4),
-              foregroundColor: Colors.white,
-              padding: const EdgeInsets.symmetric(vertical: 14),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(999),
-              ),
-            ),
-            child: recordingStarted
-                ? const Text(
-                    'Done',
-                    style: TextStyle(fontWeight: FontWeight.w800, fontSize: 15),
-                  )
-                : const SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: Colors.white54,
-                    ),
-                  ),
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _ConfirmingContent extends StatelessWidget {
-  final String confirmed;
-  final VoidCallback onConfirm;
-  final VoidCallback onRetake;
-
-  const _ConfirmingContent({
-    required this.confirmed,
-    required this.onConfirm,
-    required this.onRetake,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Text(
-          'Does this sound right?',
-          style: TextStyle(
-            color: Colors.white,
-            fontWeight: FontWeight.w800,
-            fontSize: 17,
-          ),
-        ),
-        const SizedBox(height: 14),
-        Container(
-          width: double.infinity,
-          padding: const EdgeInsets.all(14),
-          decoration: BoxDecoration(
-            color: Colors.white.withValues(alpha: 0.06),
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: Colors.white12),
-          ),
-          child: Text(
-            confirmed,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 15,
-              height: 1.5,
-            ),
-          ),
-        ),
-        const SizedBox(height: 20),
-        Row(
-          children: [
-            Expanded(
-              child: OutlinedButton(
-                onPressed: onRetake,
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: Colors.white70,
-                  side: const BorderSide(color: Colors.white24),
-                  padding: const EdgeInsets.symmetric(vertical: 14),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                ),
-                child: const Text(
-                  'Retake',
-                  style: TextStyle(fontWeight: FontWeight.w700),
-                ),
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: ElevatedButton(
-                onPressed: onConfirm,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF16A34A),
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(vertical: 14),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                ),
-                child: const Text(
-                  'Confirm',
-                  style: TextStyle(fontWeight: FontWeight.w800),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ],
-    );
-  }
-}
-
-class _RequestingContent extends StatelessWidget {
-  final VoidCallback onAllow;
-  final VoidCallback onDismiss;
-
-  const _RequestingContent({required this.onAllow, required this.onDismiss});
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Text(
-          'Recreate the problem',
-          style: TextStyle(
-            color: Colors.white,
-            fontWeight: FontWeight.w800,
-            fontSize: 17,
-          ),
-        ),
-        const SizedBox(height: 10),
-        const Text(
-          'Tap Buy Now again so Syndai can capture the exact failure. We\'ll record your screen and network activity only during this window.',
-          style: TextStyle(color: Colors.white70, fontSize: 14, height: 1.5),
-        ),
-        const SizedBox(height: 20),
-        Container(
-          padding: const EdgeInsets.all(14),
-          decoration: BoxDecoration(
-            color: const Color(0xFF1E293B),
-            borderRadius: BorderRadius.circular(14),
-          ),
-          child: const Row(
-            children: [
-              Icon(Icons.lock_outline, color: Color(0xFF94A3B8), size: 16),
-              SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  'Screen + network logs · deleted after report is filed',
-                  style: TextStyle(color: Color(0xFF94A3B8), fontSize: 12),
-                ),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 20),
-        Row(
-          children: [
-            Expanded(
-              child: OutlinedButton(
-                onPressed: onDismiss,
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: Colors.white70,
-                  side: const BorderSide(color: Colors.white24),
-                  padding: const EdgeInsets.symmetric(vertical: 14),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                ),
-                child: const Text(
-                  'Not Now',
-                  style: TextStyle(fontWeight: FontWeight.w700),
-                ),
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: ElevatedButton(
-                onPressed: onAllow,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF026CDF),
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(vertical: 14),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                ),
-                child: const Text(
-                  'Allow & Record',
-                  style: TextStyle(fontWeight: FontWeight.w800),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ],
-    );
-  }
-}
-
-class _LiveWaveformBars extends StatefulWidget {
-  final double amplitude;
-  const _LiveWaveformBars({required this.amplitude});
-
-  @override
-  State<_LiveWaveformBars> createState() => _LiveWaveformBarsState();
-}
-
-class _LiveWaveformBarsState extends State<_LiveWaveformBars>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _ctrl;
-
-  @override
-  void initState() {
-    super.initState();
-    _ctrl = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 900),
-    )..repeat();
-  }
-
-  @override
-  void dispose() {
-    _ctrl.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: _ctrl,
-      builder: (context, _) {
-        return Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          crossAxisAlignment: CrossAxisAlignment.center,
-          children: List.generate(16, (i) {
-            final phase = (_ctrl.value * math.pi * 2) + i * 0.45;
-            final swing = (math.sin(phase) + 1) / 2;
-            final amp = widget.amplitude.clamp(0.08, 1.0);
-            final h = 10.0 + swing * 28 + amp * 18;
-            return Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 2.5),
-              child: Container(
-                width: 4,
-                height: h,
-                decoration: BoxDecoration(
-                  color: Color.lerp(
-                    const Color(0xFF22C55E),
-                    const Color(0xFF4ADE80),
-                    swing,
-                  ),
-                  borderRadius: BorderRadius.circular(999),
-                ),
-              ),
-            );
-          }),
-        );
-      },
     );
   }
 }

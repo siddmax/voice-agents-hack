@@ -119,7 +119,7 @@ class _DemoShellState extends State<_DemoShell> {
             ),
           ),
         ),
-        VoiceBugButton(onTap: () => widget.capture.startCapture(context)),
+        VoiceBugButton(onTap: () => widget.capture.showChooser()),
         VoiceBugOverlay(controller: widget.capture),
       ],
     );

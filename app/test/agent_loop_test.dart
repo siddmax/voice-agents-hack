@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:syndai/agent/agent_loop.dart';
@@ -11,6 +12,52 @@ import 'package:syndai/agent/tool_registry.dart';
 import 'fake_cactus_engine.dart';
 
 void main() {
+  group('transcribe', () {
+    test('rejects language diagnosis as non-transcript output', () async {
+      final tmp = await Directory.systemTemp.createTemp('syndai_test_');
+      final memory = await Memory.open(dir: tmp);
+      final engine = FakeCactusEngine([])..nextRaw = 'The audio is in Tamil.';
+      final loop = AgentLoop(
+        engine: engine,
+        todos: TodoStore(),
+        memory: memory,
+        tools: ToolRegistry(),
+        assembler: PromptAssembler(
+          todos: TodoStore(),
+          readMemory: memory.readAll,
+          toolResults: ToolResultStore(),
+        ),
+      );
+
+      final transcript = await loop.transcribe(Uint8List.fromList([1, 2, 3]));
+
+      expect(transcript, isNull);
+      expect(
+        engine.capturedMessages.single.single['content'],
+        contains('Do not identify, guess, or name the spoken language'),
+      );
+      await tmp.delete(recursive: true);
+    });
+
+    test('strips language diagnosis prefix when spoken text follows', () {
+      expect(
+        normalizeTranscriptionOutput(
+          'The audio is in Tamil: the checkout button is frozen',
+        ),
+        'the checkout button is frozen',
+      );
+    });
+
+    test('parses wrapped response and removes transcript label', () {
+      expect(
+        normalizeTranscriptionOutput(
+          '{"success":true,"response":"Transcript: checkout is broken"}',
+        ),
+        'checkout is broken',
+      );
+    });
+  });
+
   test('5-turn loop: plan, 3 tool calls (with repeat), finish', () async {
     final tmp = await Directory.systemTemp.createTemp('syndai_test_');
     final memory = await Memory.open(dir: tmp);
@@ -67,12 +114,14 @@ void main() {
       assembler: assembler,
     );
 
-    tools.register(ToolSpec(
-      name: 'echo_tool',
-      description: 'echo',
-      inputSchema: const {},
-      executor: (args) async => {'echo': args},
-    ));
+    tools.register(
+      ToolSpec(
+        name: 'echo_tool',
+        description: 'echo',
+        inputSchema: const {},
+        executor: (args) async => {'echo': args},
+      ),
+    );
 
     final events = <AgentEvent>[];
     await for (final e in loop.run('Help me plan a trip to Paris next month')) {

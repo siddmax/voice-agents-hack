@@ -3,9 +3,11 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import '../cactus/engine.dart';
+import '../sdk/feedback_analyzer.dart';
 import 'agent_service.dart';
 import 'compaction.dart';
-import 'output_processor.dart' show validateArgsAgainstSchema;
+import 'output_processor.dart'
+    show extractJsonObject, validateArgsAgainstSchema;
 import 'memory.dart';
 import 'memory_tools.dart';
 import 'prompt_assembler.dart';
@@ -30,6 +32,7 @@ class AgentLoop implements AgentService {
   final MessageListCompactor? compactor;
   final int maxSteps;
   final SemanticGate _semanticGate;
+  late final FeedbackAnalyzer _feedbackAnalyzer = FeedbackAnalyzer(engine);
 
   List<Map<String, dynamic>> _history = [];
   final List<String> _recentToolKeys = [];
@@ -54,93 +57,103 @@ class AgentLoop implements AgentService {
   }
 
   void _registerCoreTools() {
-    tools.register(ToolSpec(
-      name: 'write_todos',
-      description:
-          'Replace the TODO ledger. Provide a full list of todos with id (t1,t2,...), content, status.',
-      inputSchema: {
-        'type': 'object',
-        'properties': {
-          'todos': {
-            'type': 'array',
-            'items': {
-              'type': 'object',
-              'properties': {
-                'id': {'type': 'string'},
-                'content': {'type': 'string'},
-                'status': {
-                  'type': 'string',
-                  'enum': ['pending', 'inProgress', 'completed'],
+    tools.register(
+      ToolSpec(
+        name: 'write_todos',
+        description:
+            'Replace the TODO ledger. Provide a full list of todos with id (t1,t2,...), content, status.',
+        inputSchema: {
+          'type': 'object',
+          'properties': {
+            'todos': {
+              'type': 'array',
+              'items': {
+                'type': 'object',
+                'properties': {
+                  'id': {'type': 'string'},
+                  'content': {'type': 'string'},
+                  'status': {
+                    'type': 'string',
+                    'enum': ['pending', 'inProgress', 'completed'],
+                  },
+                  'notes': {'type': 'string'},
                 },
-                'notes': {'type': 'string'},
+                'required': ['id', 'content', 'status'],
               },
-              'required': ['id', 'content', 'status'],
             },
           },
+          'required': ['todos'],
         },
-        'required': ['todos'],
-      },
-      executor: (args) async {
-        final list = (args['todos'] as List).cast<Map>();
-        final parsed = list
-            .map((m) => TodoItem(
+        executor: (args) async {
+          final list = (args['todos'] as List).cast<Map>();
+          final parsed = list
+              .map(
+                (m) => TodoItem(
                   m['id'] as String,
                   m['content'] as String,
                   _parseStatus(m['status'] as String),
-                ))
-            .toList();
-        todos.replaceAll(parsed);
-        return {'ok': true, 'count': parsed.length};
-      },
-    ));
-
-    tools.register(ToolSpec(
-      name: 'read_tool_result',
-      description:
-          'Re-fetch a previously truncated tool result by its handle (tr_NNNN).',
-      inputSchema: {
-        'type': 'object',
-        'properties': {
-          'handle': {'type': 'string'},
+                ),
+              )
+              .toList();
+          todos.replaceAll(parsed);
+          return {'ok': true, 'count': parsed.length};
         },
-        'required': ['handle'],
-      },
-      executor: (args) async {
-        final handle = args['handle'] as String;
-        final v = assembler.toolResults.get(handle);
-        return v == null
-            ? {'error': 'unknown_handle', 'handle': handle}
-            : {'content': v};
-      },
-    ));
+      ),
+    );
 
-    tools.register(ToolSpec(
-      name: 'finish',
-      description:
-          'Call when the user\'s goal is complete. Provide a short spoken summary.',
-      inputSchema: {
-        'type': 'object',
-        'properties': {
-          'summary': {'type': 'string'},
+    tools.register(
+      ToolSpec(
+        name: 'read_tool_result',
+        description:
+            'Re-fetch a previously truncated tool result by its handle (tr_NNNN).',
+        inputSchema: {
+          'type': 'object',
+          'properties': {
+            'handle': {'type': 'string'},
+          },
+          'required': ['handle'],
         },
-        'required': ['summary'],
-      },
-      executor: (args) async => {'ok': true, 'summary': args['summary']},
-    ));
+        executor: (args) async {
+          final handle = args['handle'] as String;
+          final v = assembler.toolResults.get(handle);
+          return v == null
+              ? {'error': 'unknown_handle', 'handle': handle}
+              : {'content': v};
+        },
+      ),
+    );
 
-    tools.register(ToolSpec(
-      name: 'request_user_input',
-      description:
-          'Ask the user a clarifying question. The run pauses until the user replies.',
-      inputSchema: {
-        'type': 'object',
-        'properties': {
-          'question': {'type': 'string'},
+    tools.register(
+      ToolSpec(
+        name: 'finish',
+        description:
+            'Call when the user\'s goal is complete. Provide a short spoken summary.',
+        inputSchema: {
+          'type': 'object',
+          'properties': {
+            'summary': {'type': 'string'},
+          },
+          'required': ['summary'],
         },
-        'required': ['question'],
-      },
-      executor: (args) async => {'ok': true, 'question': args['question']},
-    ));
+        executor: (args) async => {'ok': true, 'summary': args['summary']},
+      ),
+    );
+
+    tools.register(
+      ToolSpec(
+        name: 'request_user_input',
+        description:
+            'Ask the user a clarifying question. The run pauses until the user replies.',
+        inputSchema: {
+          'type': 'object',
+          'properties': {
+            'question': {'type': 'string'},
+          },
+          'required': ['question'],
+        },
+        executor: (args) async => {'ok': true, 'question': args['question']},
+      ),
+    );
   }
 
   @override
@@ -153,17 +166,27 @@ class AgentLoop implements AgentService {
     try {
       final raw = await engine.completeRaw(
         messages: [
-          {'role': 'user', 'content': 'Transcribe the audio exactly as spoken. Reply with only the transcribed words.'},
+          {'role': 'user', 'content': _transcriptionPrompt},
         ],
         pcmData: pcm,
-        maxTokens: 256,
+        maxTokens: 384,
         temperature: 0.0,
       );
-      final trimmed = raw.trim();
-      return trimmed.isEmpty ? null : trimmed;
+      return normalizeTranscriptionOutput(raw);
     } catch (_) {
       return null;
     }
+  }
+
+  @override
+  Future<FeedbackReport> analyzeFeedback(
+    String transcript, {
+    Uint8List? pcmData,
+  }) {
+    return _feedbackAnalyzer.analyzeFeedback(
+      transcript: transcript,
+      pcmData: pcmData,
+    );
   }
 
   int get gateTriggerCount => _semanticGate.triggerCount;
@@ -237,7 +260,9 @@ class AgentLoop implements AgentService {
         // Gap 4: schema-validate args before executing. On fail, surface the
         // exact mismatch back to the model so the next turn can fix it.
         final schemaError = validateArgsAgainstSchema(
-          toolName: name, args: args, tools: tools.toSchemas(),
+          toolName: name,
+          args: args,
+          tools: tools.toSchemas(),
         );
         if (schemaError != null) {
           _history.add({
@@ -383,8 +408,7 @@ class AgentLoop implements AgentService {
       // (common when the prompt lists tools), completeJson returns the
       // whole {name, arguments} envelope. Unwrap so the executor sees
       // just the args shape it expects ({todos: [...]}).
-      if (result['arguments'] is Map &&
-          result['name'] == 'write_todos') {
+      if (result['arguments'] is Map && result['name'] == 'write_todos') {
         return (result['arguments'] as Map).cast<String, dynamic>();
       }
       return result;
@@ -486,7 +510,8 @@ class AgentLoop implements AgentService {
     for (final c in candidates) {
       final name = c['name'] ?? c['tool'] ?? c['function_name'];
       if (name is String && name.trim().isNotEmpty) {
-        final args = unwrap(c['arguments']) ??
+        final args =
+            unwrap(c['arguments']) ??
             unwrap(c['args']) ??
             unwrap(c['parameters']) ??
             <String, dynamic>{};
@@ -498,7 +523,8 @@ class AgentLoop implements AgentService {
 
   String _canonicalKey(String name, Map<String, dynamic> args) {
     final sorted = Map.fromEntries(
-        args.entries.toList()..sort((a, b) => a.key.compareTo(b.key)));
+      args.entries.toList()..sort((a, b) => a.key.compareTo(b.key)),
+    );
     return '$name:${jsonEncode(sorted)}';
   }
 
@@ -522,9 +548,108 @@ class AgentLoop implements AgentService {
   }
 }
 
+const _transcriptionPrompt = '''
+You are a literal speech-to-text transcriber.
+Return only the words the speaker said.
+Do not identify, guess, or name the spoken language.
+Do not translate into another language.
+Preserve code-switching, accented English, names, brands, and romanized words.
+If a word is not intelligible, write [unclear] for that word.
+Do not add labels such as "Transcript:", "Language:", or "The audio is in ...".
+''';
+
+String? normalizeTranscriptionOutput(String raw) {
+  var text = raw.trim();
+  if (text.isEmpty) return null;
+
+  final parsed = extractJsonObject(text);
+  if (parsed != null) {
+    final response = parsed['response'];
+    final textValue = parsed['text'];
+    final transcript = parsed['transcript'];
+    if (response is String && response.trim().isNotEmpty) {
+      text = response.trim();
+    } else if (textValue is String && textValue.trim().isNotEmpty) {
+      text = textValue.trim();
+    } else if (transcript is String && transcript.trim().isNotEmpty) {
+      text = transcript.trim();
+    }
+  }
+
+  text = _stripCodeFence(text);
+  text = _stripWrappingQuotes(text);
+  text = _stripTranscriptLabel(text);
+  text = _stripLanguageDiagnosisPrefix(text);
+  text = text.trim();
+
+  if (text.isEmpty || text == '[unclear]') return null;
+  if (_isLanguageDiagnosis(text)) return null;
+  if (_isNonTranscriptApology(text)) return null;
+  return text;
+}
+
+String _stripCodeFence(String text) {
+  final match = RegExp(r'^```(?:text)?\s*([\s\S]*?)\s*```$').firstMatch(text);
+  return match == null ? text : match.group(1)!.trim();
+}
+
+String _stripWrappingQuotes(String text) {
+  if (text.length < 2) return text;
+  final first = text[0];
+  final last = text[text.length - 1];
+  if ((first == '"' && last == '"') || (first == "'" && last == "'")) {
+    return text.substring(1, text.length - 1).trim();
+  }
+  return text;
+}
+
+String _stripTranscriptLabel(String text) {
+  return text.replaceFirst(
+    RegExp(
+      r'^(?:transcript|transcription|the speaker said)\s*:\s*',
+      caseSensitive: false,
+    ),
+    '',
+  );
+}
+
+String _stripLanguageDiagnosisPrefix(String text) {
+  final match = RegExp(
+    r'^(?:(?:the\s+)?(?:audio|recording|speech|speaker|spoken\s+language)\s+(?:seems|appears|sounds)?\s*(?:to\s+be\s+)?(?:is\s+)?(?:in\s+)?|(?:it\s+sounds\s+like\s+)|(?:language\s*:\s*))'
+    r'(?:tamil|telugu|kannada|malayalam|hindi|south\s+indian|dravidian|english)'
+    r'\s*[:\-.]\s*(.+)$',
+    caseSensitive: false,
+  ).firstMatch(text.trim());
+  return match == null ? text : match.group(1)!.trim();
+}
+
+bool _isLanguageDiagnosis(String text) {
+  final lower = text.toLowerCase().trim();
+  final mentionsLanguage = RegExp(
+    r'\b(tamil|telugu|kannada|malayalam|hindi|south indian|dravidian|english)\b',
+  ).hasMatch(lower);
+  if (!mentionsLanguage) return false;
+
+  final startsLikeDiagnosis = RegExp(
+    r'^(?:the\s+)?(?:audio|recording|speech|speaker|spoken language|language)\b|'
+    r'^(?:it\s+)?(?:sounds|seems|appears)\b|'
+    r'^i\s+(?:think|believe)\b',
+  ).hasMatch(lower);
+  return startsLikeDiagnosis && lower.split(RegExp(r'\s+')).length <= 18;
+}
+
+bool _isNonTranscriptApology(String text) {
+  final lower = text.toLowerCase();
+  return lower.startsWith("i can't transcribe") ||
+      lower.startsWith('i cannot transcribe') ||
+      lower.startsWith('unable to transcribe') ||
+      lower.startsWith('sorry, i cannot') ||
+      lower.startsWith("sorry, i can't");
+}
+
 TodoStatus _parseStatus(String s) => switch (s) {
-      'inProgress' => TodoStatus.inProgress,
-      'in_progress' => TodoStatus.inProgress,
-      'completed' => TodoStatus.completed,
-      _ => TodoStatus.pending,
-    };
+  'inProgress' => TodoStatus.inProgress,
+  'in_progress' => TodoStatus.inProgress,
+  'completed' => TodoStatus.completed,
+  _ => TodoStatus.pending,
+};

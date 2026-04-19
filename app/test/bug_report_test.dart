@@ -66,6 +66,20 @@ void main() {
       expect(BugReport.fromJson({'severity': 'High'}).severity, 'high');
       expect(BugReport.fromJson({'severity': ' LOW '}).severity, 'low');
     });
+
+    test('reconciles understated severity from report evidence', () {
+      final report = BugReport.fromJson({
+        'title': 'Checkout issue',
+        'description': 'Checkout does not finish',
+        'steps_context': 'User tapped buy',
+        'expected': 'Checkout completes',
+        'actual': 'The spinner runs forever',
+        'severity': 'low',
+        'ui_state': 'Checkout loading',
+      });
+
+      expect(report.severity, 'high');
+    });
   });
 
   group('BugReport.fallback', () {
@@ -105,7 +119,10 @@ void main() {
         uiState: 'ui',
       );
 
-      final updated = original.copyWith(title: 'new title', severity: 'critical');
+      final updated = original.copyWith(
+        title: 'new title',
+        severity: 'critical',
+      );
       expect(updated.title, 'new title');
       expect(updated.severity, 'critical');
       expect(updated.description, 'desc');

@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'github_client.dart';
 import 'github_config.dart';
 
@@ -37,7 +39,7 @@ class GitHubIssueService {
     : config = config ?? GitHubConfig.fromEnvironment(),
       _client = client;
 
-  bool get isReady => config != null;
+  bool get isReady => config != null || _client != null;
 
   String get readinessMessage {
     if (isReady) return 'GitHub issue submission is configured.';
@@ -47,17 +49,11 @@ class GitHubIssueService {
 
   Future<GitHubIssueSubmission> submit(GitHubIssueRequest request) async {
     final resolvedConfig = config;
-    if (resolvedConfig == null) {
+    if (resolvedConfig == null && _client == null) {
       throw GitHubIssueFailure(readinessMessage);
     }
 
-    final client =
-        _client ??
-        GitHubClient(
-          owner: resolvedConfig.owner,
-          repo: resolvedConfig.repo,
-          token: resolvedConfig.token,
-        );
+    final client = _client ?? _clientFromConfig(resolvedConfig!);
 
     final url = await client.createIssue(
       title: request.title,
@@ -78,6 +74,24 @@ class GitHubIssueService {
       issueNumber: issueNumber == null || issueNumber.isEmpty
           ? null
           : '#$issueNumber',
+    );
+  }
+
+  Future<String?> uploadVideoFile(String path) async {
+    final resolvedConfig = config;
+    if (resolvedConfig == null && _client == null) return null;
+    final file = File(path);
+    if (!await file.exists()) return null;
+
+    final client = _client ?? _clientFromConfig(resolvedConfig!);
+    return client.uploadVideo(await file.readAsBytes());
+  }
+
+  GitHubClient _clientFromConfig(GitHubConfig config) {
+    return GitHubClient(
+      owner: config.owner,
+      repo: config.repo,
+      token: config.token,
     );
   }
 }

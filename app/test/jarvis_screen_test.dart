@@ -9,7 +9,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:syndai/agent/agent_service.dart';
 import 'package:syndai/agent/mock_agent_service.dart';
 import 'package:syndai/main.dart';
+import 'package:syndai/sdk/feedback_analyzer.dart';
 import 'package:syndai/sdk/github_issue_service.dart';
+import 'package:syndai/sdk/screen_recording_capture.dart';
 import 'package:syndai/ui/activity_feed.dart';
 import 'package:syndai/ui/app_settings.dart';
 import 'package:syndai/ui/chat_controller.dart';
@@ -18,6 +20,10 @@ import 'package:syndai/voice/audio_recorder.dart';
 import 'package:syndai/voice/tts.dart';
 
 class _FakeAgent implements AgentService {
+  final String? transcript;
+
+  const _FakeAgent({this.transcript});
+
   @override
   Stream<AgentEvent> run(String userInput) async* {
     yield const AgentToolCall('memory_view', <String, dynamic>{});
@@ -31,7 +37,15 @@ class _FakeAgent implements AgentService {
   Future<void> cancel() async {}
 
   @override
-  Future<String?> transcribe(Uint8List pcm) async => null;
+  Future<String?> transcribe(Uint8List pcm) async => transcript;
+
+  @override
+  Future<FeedbackReport> analyzeFeedback(
+    String transcript, {
+    Uint8List? pcmData,
+  }) async {
+    return FeedbackReport.fromTranscript(transcript);
+  }
 }
 
 AgentService fakeAgent() => _FakeAgent();
@@ -77,6 +91,32 @@ class _FakeRecorder implements PcmCapture {
   }
 }
 
+class _FakeScreenRecorder implements ScreenRecordingCapture {
+  bool _recording = false;
+  bool nextStart = true;
+  String? nextPath = '/tmp/repro.mp4';
+
+  @override
+  bool get isRecording => _recording;
+
+  @override
+  Future<void> cancel() async {
+    _recording = false;
+  }
+
+  @override
+  Future<bool> start() async {
+    _recording = nextStart;
+    return nextStart;
+  }
+
+  @override
+  Future<String?> stop() async {
+    _recording = false;
+    return nextPath;
+  }
+}
+
 class _FakeGitHubIssueService extends GitHubIssueService {
   _FakeGitHubIssueService({this.ready = true});
 
@@ -98,6 +138,10 @@ class _FakeGitHubIssueService extends GitHubIssueService {
       issueNumber: '#42',
     );
   }
+
+  @override
+  Future<String?> uploadVideoFile(String path) async =>
+      'https://example.com/repro.mp4';
 }
 
 void main() {
@@ -163,9 +207,7 @@ void main() {
     expect(find.text('MCP servers'), findsOneWidget);
   });
 
-  testWidgets('listening sheet exposes finish and cancel controls', (
-    tester,
-  ) async {
+  testWidgets('bug icon opens unified mode picker', (tester) async {
     tester.view.physicalSize = const Size(1440, 2200);
     tester.view.devicePixelRatio = 1.0;
     final recorder = _FakeRecorder();
@@ -177,7 +219,12 @@ void main() {
           Provider(create: (_) => TextToSpeechService()),
           ChangeNotifierProvider(create: (_) => ChatController(fakeAgent())),
         ],
-        child: MaterialApp(home: JarvisScreen(recorder: recorder)),
+        child: MaterialApp(
+          home: JarvisScreen(
+            recorder: recorder,
+            screenRecorder: _FakeScreenRecorder(),
+          ),
+        ),
       ),
     );
     await tester.pump();
@@ -185,45 +232,46 @@ void main() {
     await tester.tap(find.byIcon(Icons.graphic_eq_rounded).first);
     await tester.pump(const Duration(milliseconds: 400));
 
-    expect(
-      find.textContaining("I'm listening. Tell me what happened"),
-      findsWidgets,
-    );
-
-    expect(find.text('Cancel'), findsOneWidget);
-    expect(find.text('Finish Capture'), findsOneWidget);
+    expect(find.text('What would you like to send?'), findsOneWidget);
+    expect(find.text('Give us feedback'), findsOneWidget);
+    expect(find.text('Reproduce a bug'), findsOneWidget);
+    expect(find.text('Cancel'), findsWidgets);
   });
 
-  testWidgets('starting listening does not auto-greet or auto-run the agent', (
-    tester,
-  ) async {
-    tester.view.physicalSize = const Size(1440, 2200);
-    tester.view.devicePixelRatio = 1.0;
-    final recorder = _FakeRecorder();
-    final chat = ChatController(fakeAgent());
+  testWidgets(
+    'opening report picker does not auto-greet or auto-run the agent',
+    (tester) async {
+      tester.view.physicalSize = const Size(1440, 2200);
+      tester.view.devicePixelRatio = 1.0;
+      final recorder = _FakeRecorder();
+      final chat = ChatController(fakeAgent());
 
-    await tester.pumpWidget(
-      MultiProvider(
-        providers: [
-          ChangeNotifierProvider(create: (_) => AppSettings()..load()),
-          Provider(create: (_) => TextToSpeechService()),
-          ChangeNotifierProvider<ChatController>.value(value: chat),
-        ],
-        child: MaterialApp(home: JarvisScreen(recorder: recorder)),
-      ),
-    );
-    await tester.pump();
+      await tester.pumpWidget(
+        MultiProvider(
+          providers: [
+            ChangeNotifierProvider(create: (_) => AppSettings()..load()),
+            Provider(create: (_) => TextToSpeechService()),
+            ChangeNotifierProvider<ChatController>.value(value: chat),
+          ],
+          child: MaterialApp(
+            home: JarvisScreen(
+              recorder: recorder,
+              screenRecorder: _FakeScreenRecorder(),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
 
-    await tester.tap(find.byIcon(Icons.graphic_eq_rounded).first);
-    await tester.pump(const Duration(milliseconds: 400));
+      await tester.tap(find.byIcon(Icons.graphic_eq_rounded).first);
+      await tester.pump(const Duration(milliseconds: 400));
 
-    expect(chat.events, isEmpty);
-    expect(chat.running, isFalse);
-  });
+      expect(chat.events, isEmpty);
+      expect(chat.running, isFalse);
+    },
+  );
 
-  testWidgets('mock agent shows model-not-loaded warning on mic tap', (
-    tester,
-  ) async {
+  testWidgets('mock agent can still open feedback picker', (tester) async {
     tester.view.physicalSize = const Size(1440, 2200);
     tester.view.devicePixelRatio = 1.0;
 
@@ -236,7 +284,12 @@ void main() {
             create: (_) => ChatController(MockAgentService()),
           ),
         ],
-        child: MaterialApp(home: JarvisScreen(recorder: _FakeRecorder())),
+        child: MaterialApp(
+          home: JarvisScreen(
+            recorder: _FakeRecorder(),
+            screenRecorder: _FakeScreenRecorder(),
+          ),
+        ),
       ),
     );
     await tester.pump();
@@ -244,10 +297,106 @@ void main() {
     await tester.tap(find.byIcon(Icons.graphic_eq_rounded).first);
     await tester.pump(const Duration(milliseconds: 100));
 
-    expect(
-      find.textContaining('Voice capture needs the on-device model'),
-      findsOneWidget,
+    expect(find.text('What would you like to send?'), findsOneWidget);
+  });
+
+  testWidgets('feedback preview shows plain transcript and negative coupon', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1440, 2200);
+    tester.view.devicePixelRatio = 1.0;
+
+    await tester.pumpWidget(
+      MultiProvider(
+        providers: [
+          ChangeNotifierProvider(create: (_) => AppSettings()..load()),
+          Provider(create: (_) => TextToSpeechService()),
+          ChangeNotifierProvider(
+            create: (_) => ChatController(
+              const _FakeAgent(
+                transcript: 'Checkout is broken and I am frustrated.',
+              ),
+            ),
+          ),
+        ],
+        child: MaterialApp(
+          home: JarvisScreen(
+            recorder: _FakeRecorder(),
+            screenRecorder: _FakeScreenRecorder(),
+            githubIssueService: _FakeGitHubIssueService(),
+          ),
+        ),
+      ),
     );
+    await tester.pump();
+
+    await tester.tap(find.byIcon(Icons.graphic_eq_rounded).first);
+    await tester.pump();
+    await tester.tap(find.text('Give us feedback'));
+    await tester.pump();
+    expect(find.text('Recording your voice'), findsOneWidget);
+    await tester.tap(find.text('Done').last);
+    for (var i = 0; i < 20; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+
+    expect(find.text('Your Feedback'), findsOneWidget);
+    expect(find.textContaining('Checkout is broken'), findsOneWidget);
+    expect(find.textContaining('SORRY10'), findsOneWidget);
+    expect(find.textContaining('{'), findsNothing);
+  });
+
+  testWidgets('repro preview renders generated steps and video evidence', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1440, 2200);
+    tester.view.devicePixelRatio = 1.0;
+
+    await tester.pumpWidget(
+      MultiProvider(
+        providers: [
+          ChangeNotifierProvider(create: (_) => AppSettings()..load()),
+          Provider(create: (_) => TextToSpeechService()),
+          ChangeNotifierProvider(
+            create: (_) => ChatController(
+              const _FakeAgent(
+                transcript:
+                    'Tap the seat then tap buy now. The checkout stays stuck.',
+              ),
+            ),
+          ),
+        ],
+        child: MaterialApp(
+          home: JarvisScreen(
+            recorder: _FakeRecorder(),
+            screenRecorder: _FakeScreenRecorder(),
+            githubIssueService: _FakeGitHubIssueService(),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    await tester.tap(find.byIcon(Icons.graphic_eq_rounded).first);
+    await tester.pump();
+    await tester.tap(find.text('Reproduce a bug'));
+    await tester.pump();
+
+    expect(find.text('Recording reproduction'), findsOneWidget);
+
+    await tester.tap(find.text('Section 106, Row 4'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Buy Now'), findsOneWidget);
+
+    await tester.tap(find.text('Done').last);
+    for (var i = 0; i < 20; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+
+    expect(find.text('Bug Report Preview'), findsOneWidget);
+    expect(find.text('Video Evidence'), findsOneWidget);
+    expect(find.textContaining('Tap the seat'), findsWidgets);
   });
 
   testWidgets(
@@ -280,33 +429,38 @@ void main() {
     },
   );
 
-  testWidgets(
-    'seat list does not show the gray location circle after back navigation',
-    (tester) async {
-      tester.view.physicalSize = const Size(1440, 2200);
-      tester.view.devicePixelRatio = 1.0;
+  testWidgets('seat list keeps price visible after returning from checkout', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1440, 2200);
+    tester.view.devicePixelRatio = 1.0;
 
-      await tester.pumpWidget(
-        SyndaiApp(agentFactory: fakeAgent, startupError: null),
-      );
-      await tester.pump();
+    await tester.pumpWidget(
+      SyndaiApp(agentFactory: fakeAgent, startupError: null),
+    );
+    await tester.pump();
 
-      expect(find.byIcon(Icons.location_on_outlined), findsNothing);
+    expect(find.byIcon(Icons.location_on_outlined), findsNothing);
 
-      await tester.tap(find.text('Section 105, Row 10').first);
-      for (var i = 0; i < 8; i++) {
-        await tester.pump(const Duration(milliseconds: 100));
-      }
+    await tester.tap(find.text('Section 105, Row 10').first);
+    for (var i = 0; i < 8; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
 
-      expect(find.byIcon(Icons.location_on_outlined), findsOneWidget);
+    expect(find.byIcon(Icons.location_on_outlined), findsOneWidget);
 
-      await tester.tap(find.byIcon(Icons.arrow_back).first);
-      for (var i = 0; i < 8; i++) {
-        await tester.pump(const Duration(milliseconds: 100));
-      }
+    await tester.tap(find.byIcon(Icons.arrow_back).first);
+    for (var i = 0; i < 8; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
 
-      expect(find.text('Section 105, Row 10'), findsWidgets);
-      expect(find.byIcon(Icons.location_on_outlined), findsNothing);
-    },
-  );
+    expect(find.text('Section 105, Row 10'), findsWidgets);
+    expect(find.text('\$350'), findsOneWidget);
+    expect(
+      find.text('Checkout is stuck on a spinner after seat selection.'),
+      findsNothing,
+    );
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+    expect(find.byIcon(Icons.location_on_outlined), findsNothing);
+  });
 }

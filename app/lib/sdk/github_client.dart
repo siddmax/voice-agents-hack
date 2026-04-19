@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -8,6 +9,7 @@ class GitHubClient {
   final String repo;
   final String token;
   String? _lastError;
+  Future<void> _assetUploadTail = Future<void>.value();
 
   static const _assetBranch = 'voicebug-assets';
 
@@ -21,31 +23,70 @@ class GitHubClient {
   String? get lastError => _lastError;
 
   Future<String?> uploadScreenshot(Uint8List pngBytes) async {
-    final timestamp = DateTime.now().millisecondsSinceEpoch;
-    final path = '$timestamp.png';
-    final b64 = base64Encode(pngBytes);
-
-    var resp = await _putContent(path, b64, timestamp);
-
-    if (resp.statusCode == 404) {
-      final created = await _createAssetBranch();
-      if (!created) return null;
-      resp = await _putContent(path, b64, timestamp);
-    }
-
-    if (resp.statusCode == 201 || resp.statusCode == 200) {
-      final data = jsonDecode(resp.body);
-      return data['content']?['download_url'] as String?;
-    }
-    return null;
+    return _uploadAsset(
+      pathPrefix: 'screenshots',
+      extension: 'png',
+      bytes: pngBytes,
+      messagePrefix: 'VoiceBug screenshot',
+    );
   }
 
-  Future<http.Response> _putContent(String path, String b64, int timestamp) {
+  Future<String?> uploadVideo(Uint8List videoBytes) async {
+    const maxVideoBytes = 10 * 1024 * 1024;
+    if (videoBytes.length > maxVideoBytes) return null;
+    return _uploadAsset(
+      pathPrefix: 'videos',
+      extension: 'mp4',
+      bytes: videoBytes,
+      messagePrefix: 'VoiceBug screen recording',
+    );
+  }
+
+  Future<String?> _uploadAsset({
+    required String pathPrefix,
+    required String extension,
+    required Uint8List bytes,
+    required String messagePrefix,
+  }) {
+    return _enqueueAssetUpload(() async {
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      final path = '$pathPrefix/$timestamp.$extension';
+      final b64 = base64Encode(bytes);
+
+      var resp = await _putContent(path, b64, '$messagePrefix $timestamp');
+
+      if (resp.statusCode == 404) {
+        final created = await _createAssetBranch();
+        if (!created) return null;
+        resp = await _putContent(path, b64, '$messagePrefix $timestamp');
+      }
+
+      if (resp.statusCode == 201 || resp.statusCode == 200) {
+        final data = jsonDecode(resp.body);
+        return data['content']?['download_url'] as String?;
+      }
+      return null;
+    });
+  }
+
+  Future<T> _enqueueAssetUpload<T>(Future<T> Function() operation) {
+    final completer = Completer<T>();
+    _assetUploadTail = _assetUploadTail.then((_) async {
+      try {
+        completer.complete(await operation());
+      } catch (e, st) {
+        completer.completeError(e, st);
+      }
+    });
+    return completer.future;
+  }
+
+  Future<http.Response> _putContent(String path, String b64, String message) {
     return http.put(
       Uri.parse('https://api.github.com/repos/$owner/$repo/contents/$path'),
       headers: _headers,
       body: jsonEncode({
-        'message': 'VoiceBug screenshot $timestamp',
+        'message': message,
         'content': b64,
         'branch': _assetBranch,
       }),
@@ -57,7 +98,7 @@ class GitHubClient {
       Uri.parse('https://api.github.com/repos/$owner/$repo/git/blobs'),
       headers: _headers,
       body: jsonEncode({
-        'content': 'VoiceBug screenshot storage. Do not merge this branch.',
+        'content': 'VoiceBug evidence storage. Do not merge this branch.',
         'encoding': 'utf-8',
       }),
     );
@@ -118,10 +159,7 @@ class GitHubClient {
       resp = await http.post(
         url,
         headers: _headers,
-        body: jsonEncode({
-          'title': title,
-          'body': body,
-        }),
+        body: jsonEncode({'title': title, 'body': body}),
       );
     }
 

@@ -7,6 +7,7 @@ import '../cactus/engine.dart';
 import '../voice/audio_recorder.dart';
 import '../voice/stt.dart';
 import 'device_metadata.dart';
+import 'feedback_analyzer.dart';
 import 'github_client.dart';
 import 'github_issue_service.dart';
 import 'screen_analyzer.dart';
@@ -14,13 +15,22 @@ import 'screenshot_capture.dart';
 
 enum CaptureState {
   idle,
+  choosing,
   listening,
-  analyzing,
-  previewing,
+  transcribing,
+  transcriptPreview,
+  analyzingFeedback,
+  feedbackResult,
+  couponOffer,
+  recording,
+  analyzingBugRepro,
+  bugReproPreview,
   submitting,
   done,
   error,
 }
+
+enum CaptureMode { feedback, bugRepro }
 
 class CaptureFlowController extends ChangeNotifier {
   final CactusEngine engine;
@@ -29,13 +39,23 @@ class CaptureFlowController extends ChangeNotifier {
   final GitHubIssueService issueService;
   final ScreenshotCapture screenshot;
   final ScreenAnalyzer analyzer;
+  final FeedbackAnalyzer feedbackAnalyzer;
   final PcmCapture _recorder;
 
   CaptureState _state = CaptureState.idle;
   CaptureState get state => _state;
 
+  CaptureMode? _mode;
+  CaptureMode? get mode => _mode;
+
   BugReport? _report;
   BugReport? get report => _report;
+
+  FeedbackReport? _feedbackReport;
+  FeedbackReport? get feedbackReport => _feedbackReport;
+
+  BugReproReport? _bugReproReport;
+  BugReproReport? get bugReproReport => _bugReproReport;
 
   Uint8List? _screenshotBytes;
   Uint8List? get screenshotBytes => _screenshotBytes;
@@ -64,6 +84,11 @@ class CaptureFlowController extends ChangeNotifier {
   double _soundLevel = 0.0;
   double get soundLevel => _soundLevel;
 
+  DateTime? _recordingStart;
+  Duration get recordingDuration => _recordingStart != null
+      ? DateTime.now().difference(_recordingStart!)
+      : Duration.zero;
+
   CaptureFlowController({
     required this.engine,
     required this.stt,
@@ -73,26 +98,33 @@ class CaptureFlowController extends ChangeNotifier {
     PcmCapture? recorder,
   }) : issueService = issueService ?? GitHubIssueService(client: github),
        analyzer = ScreenAnalyzer(engine),
+       feedbackAnalyzer = FeedbackAnalyzer(engine),
        _recorder = recorder ?? PcmRecorder();
 
-  Future<void> startCapture(BuildContext context) async {
+  void showChooser() {
     if (_state != CaptureState.idle) return;
+    _resetFields();
+    _state = CaptureState.choosing;
+    notifyListeners();
+  }
 
-    _report = null;
-    _issueUrl = null;
-    _errorMessage = null;
-    _partialTranscript = '';
-    _transcript = '';
-    _screenshotFailed = false;
+  void chooseMode(CaptureMode mode) {
+    if (_state != CaptureState.choosing) return;
+    _mode = mode;
+    if (mode == CaptureMode.feedback) {
+      _startFeedbackFlow();
+    } else {
+      _startBugReproFlow();
+    }
+  }
 
-    _screenshotBytes = await screenshot.capture();
-    _screenshotFailed = _screenshotBytes == null;
+  // ── Feedback flow (voice only) ──────────────────────────────────────────
 
+  Future<void> _startFeedbackFlow() async {
     _state = CaptureState.listening;
     _pcmData = null;
     notifyListeners();
 
-    // Start PCM recording in parallel (best-effort, don't block STT)
     unawaited(_recorder.startRecording().catchError((_) => false));
 
     _levelSub = stt.soundLevel.listen((level) {
@@ -115,16 +147,14 @@ class CaptureFlowController extends ChangeNotifier {
           ? 'Microphone permission denied'
           : 'Speech recognition unavailable';
       notifyListeners();
-      return;
     }
-
-    try {
-      _metadata = await DeviceMetadata.collect(context);
-    } catch (_) {}
   }
 
-  Future<void> stopAndAnalyze() async {
+  Future<void> stopListeningAndShowTranscript() async {
     if (_state != CaptureState.listening) return;
+
+    _state = CaptureState.transcribing;
+    notifyListeners();
 
     final results = await Future.wait([
       stt.stopListening(),
@@ -143,31 +173,159 @@ class CaptureFlowController extends ChangeNotifier {
       return;
     }
 
-    _state = CaptureState.analyzing;
+    _state = CaptureState.transcriptPreview;
+    notifyListeners();
+  }
+
+  void retakeRecording() {
+    _transcript = '';
+    _partialTranscript = '';
+    _pcmData = null;
+    if (_mode == CaptureMode.feedback) {
+      _startFeedbackFlow();
+    } else {
+      _startBugReproFlow();
+    }
+  }
+
+  Future<void> submitFeedback() async {
+    if (_state != CaptureState.transcriptPreview ||
+        _mode != CaptureMode.feedback) {
+      return;
+    }
+
+    _state = CaptureState.analyzingFeedback;
     notifyListeners();
 
-    _report = await analyzer
-        .analyze(
-          transcript: _transcript,
-          screenshotPng: _screenshotBytes,
-          pcmData: _pcmData,
-        )
+    _feedbackReport = await feedbackAnalyzer
+        .analyzeFeedback(transcript: _transcript, pcmData: _pcmData)
         .timeout(
           const Duration(seconds: 30),
-          onTimeout: () => BugReport.fallback(_transcript),
+          onTimeout: () => FeedbackReport.fallback(_transcript),
         );
 
-    _state = CaptureState.previewing;
+    if (_feedbackReport!.offerCoupon) {
+      _state = CaptureState.couponOffer;
+    } else {
+      _state = CaptureState.feedbackResult;
+    }
     notifyListeners();
   }
 
-  void updateReport(BugReport updated) {
-    _report = updated;
+  void dismissCoupon() {
+    _state = CaptureState.feedbackResult;
     notifyListeners();
   }
 
-  Future<void> submit() async {
-    if (_state != CaptureState.previewing || _report == null) return;
+  Future<void> submitFeedbackToGitHub() async {
+    if (_state != CaptureState.feedbackResult) return;
+
+    _state = CaptureState.submitting;
+    notifyListeners();
+
+    try {
+      final fb = _feedbackReport!;
+      final body = _formatFeedbackBody(fb);
+
+      final submission = await issueService.submit(
+        GitHubIssueRequest(
+          title:
+              '\u{1F4AC} Feedback: ${fb.summary.length > 60 ? '${fb.summary.substring(0, 57)}...' : fb.summary}',
+          body: body,
+          labels: [
+            'feedback',
+            'sentiment:${fb.sentiment.label}',
+            'category:${fb.category}',
+          ],
+        ),
+      );
+      _issueUrl = submission.url;
+      _state = CaptureState.done;
+    } on GitHubIssueFailure catch (e) {
+      _state = CaptureState.error;
+      _errorMessage = e.message;
+    } catch (e) {
+      _state = CaptureState.error;
+      _errorMessage = 'Submission failed: $e';
+    }
+    notifyListeners();
+  }
+
+  // ── Bug reproduction flow (record + voice) ──────────────────────────────
+
+  Future<void> _startBugReproFlow() async {
+    _state = CaptureState.recording;
+    _recordingStart = DateTime.now();
+    _pcmData = null;
+    notifyListeners();
+
+    unawaited(_recorder.startRecording().catchError((_) => false));
+
+    _levelSub = stt.soundLevel.listen((level) {
+      _soundLevel = level;
+      notifyListeners();
+    });
+
+    final result = await stt.startListening(
+      onPartial: (partial) {
+        _partialTranscript = partial;
+        notifyListeners();
+      },
+    );
+
+    if (result != SttStartResult.started) {
+      _levelSub?.cancel();
+      _levelSub = null;
+      _state = CaptureState.error;
+      _errorMessage = result == SttStartResult.permissionDenied
+          ? 'Microphone permission denied'
+          : 'Speech recognition unavailable';
+      notifyListeners();
+    }
+
+    _screenshotBytes = await screenshot.capture();
+    _screenshotFailed = _screenshotBytes == null;
+  }
+
+  Future<void> stopRecordingAndAnalyze() async {
+    if (_state != CaptureState.recording) return;
+
+    _state = CaptureState.analyzingBugRepro;
+    _recordingStart = null;
+    notifyListeners();
+
+    final results = await Future.wait([
+      stt.stopListening(),
+      _recorder.stopAndGetPcm().catchError((_) => null),
+    ]);
+    _transcript = results[0] as String;
+    _pcmData = results[1] as Uint8List?;
+    _levelSub?.cancel();
+    _levelSub = null;
+    _soundLevel = 0.0;
+
+    if (_transcript.trim().isEmpty) {
+      _state = CaptureState.error;
+      _errorMessage = 'No speech detected during recording. Try again.';
+      notifyListeners();
+      return;
+    }
+
+    _bugReproReport = await feedbackAnalyzer
+        .analyzeBugRepro(transcript: _transcript, pcmData: _pcmData)
+        .timeout(
+          const Duration(seconds: 30),
+          onTimeout: () => BugReproReport.fallback(_transcript),
+        );
+
+    _state = CaptureState.bugReproPreview;
+    notifyListeners();
+  }
+
+  Future<void> submitBugRepro() async {
+    if (_state != CaptureState.bugReproPreview || _bugReproReport == null) {
+      return;
+    }
 
     _state = CaptureState.submitting;
     notifyListeners();
@@ -178,37 +336,32 @@ class CaptureFlowController extends ChangeNotifier {
         screenshotUrl = await github.uploadScreenshot(_screenshotBytes!);
       }
 
-      final body = GitHubClient.formatIssueBody(
-        severity: _report!.severity,
-        description: _report!.description,
-        stepsContext: _report!.stepsContext,
-        expected: _report!.expected,
-        actual: _report!.actual,
-        uiState: _report!.uiState,
-        deviceTable: _metadata?.toMarkdownTable() ?? 'Not available',
-        screenshotUrl: screenshotUrl,
-        rawTranscript: _transcript,
-      );
+      final br = _bugReproReport!;
+      final body = _formatBugReproBody(br, screenshotUrl);
 
       final submission = await issueService.submit(
         GitHubIssueRequest(
-          title: '\u{1F41B} ${_report!.title}',
+          title: '\u{1F41B} ${br.title}',
           body: body,
-          labels: ['bug', 'voicebug', 'severity:${_report!.severity}'],
+          labels: ['bug', 'voicebug', 'severity:${br.severity}'],
         ),
       );
       _issueUrl = submission.url;
-
-      if (_issueUrl != null) {
-        _state = CaptureState.done;
-      }
+      _state = CaptureState.done;
     } on GitHubIssueFailure catch (e) {
       _state = CaptureState.error;
       _errorMessage = e.message;
     } catch (e) {
       _state = CaptureState.error;
-      _errorMessage = 'GitHub API error: $e';
+      _errorMessage = 'Submission failed: $e';
     }
+    notifyListeners();
+  }
+
+  // ── Shared ──────────────────────────────────────────────────────────────
+
+  void updateReport(BugReport updated) {
+    _report = updated;
     notifyListeners();
   }
 
@@ -217,8 +370,17 @@ class CaptureFlowController extends ChangeNotifier {
     _levelSub = null;
     if (stt.isListening) stt.cancel();
     _recorder.cancel();
+    _resetFields();
     _state = CaptureState.idle;
+    notifyListeners();
+  }
+
+  void reset() => cancel();
+
+  void _resetFields() {
     _report = null;
+    _feedbackReport = null;
+    _bugReproReport = null;
     _screenshotBytes = null;
     _pcmData = null;
     _issueUrl = null;
@@ -227,10 +389,9 @@ class CaptureFlowController extends ChangeNotifier {
     _transcript = '';
     _soundLevel = 0.0;
     _screenshotFailed = false;
-    notifyListeners();
+    _mode = null;
+    _recordingStart = null;
   }
-
-  void reset() => cancel();
 
   @override
   void dispose() {
@@ -238,4 +399,102 @@ class CaptureFlowController extends ChangeNotifier {
     _recorder.dispose();
     super.dispose();
   }
+
+  // ── Formatting ──────────────────────────────────────────────────────────
+
+  String _formatFeedbackBody(FeedbackReport fb) {
+    final themesStr = fb.themes.isNotEmpty
+        ? fb.themes.map((t) => '- $t').join('\n')
+        : '- No specific themes extracted';
+    final evidenceStr = fb.evidence.isNotEmpty
+        ? fb.evidence
+              .map((e) => '- ${e.polarity} (${e.strength}): "${e.quote}"')
+              .join('\n')
+        : '- No transcript-bound evidence extracted';
+
+    return '''## User Feedback (Voice Capture)
+
+**Sentiment:** ${_sentimentEmoji(fb.sentiment)} ${fb.sentiment.label.toUpperCase()} (${(fb.sentimentScore * 100).round()}%)
+**Emotional Tone:** ${fb.emotionalTone}
+**Category:** ${fb.category}
+**Praise present:** ${fb.praisePresent ? 'yes' : 'no'}
+**Complaints present:** ${fb.complaintsPresent ? 'yes' : 'no'}
+**Request present:** ${fb.requestPresent ? 'yes' : 'no'}
+
+---
+
+### Summary
+${fb.summary}
+
+### Key Themes
+$themesStr
+
+### Evidence
+$evidenceStr
+
+### Actionable Insight
+${fb.actionableInsight.isNotEmpty ? fb.actionableInsight : 'No specific action recommended.'}
+
+---
+
+<details>
+<summary>Raw voice transcript</summary>
+
+$_transcript
+
+</details>
+
+${fb.offerCoupon ? '\n> \u{1F3AB} **Coupon offered:** 10% off next ticket purchase (negative or mixed-negative sentiment detected)\n' : ''}
+---
+*Feedback captured via voice and analyzed on-device. No raw audio stored.*''';
+  }
+
+  String _formatBugReproBody(BugReproReport br, String? screenshotUrl) {
+    final stepsStr = br.steps
+        .asMap()
+        .entries
+        .map((e) => '${e.key + 1}. ${e.value}')
+        .join('\n');
+
+    final screenshotSection = screenshotUrl != null
+        ? '![screenshot]($screenshotUrl)'
+        : '*No screenshot captured*';
+
+    return '''## Bug Report (Voice + Screen Capture)
+
+**Severity:** ${br.severity.toUpperCase()}
+
+---
+
+### Steps to Reproduce
+$stepsStr
+
+### Expected Behavior
+${br.expectedBehavior.isNotEmpty ? br.expectedBehavior : 'Not specified'}
+
+### Actual Behavior
+${br.actualBehavior.isNotEmpty ? br.actualBehavior : 'Not specified'}
+
+### Screenshot
+$screenshotSection
+
+---
+
+<details>
+<summary>Raw voice narration</summary>
+
+$_transcript
+
+</details>
+
+---
+*Bug report compiled from voice narration and screen capture. Analyzed on-device.*''';
+  }
+
+  static String _sentimentEmoji(Sentiment s) => switch (s) {
+    Sentiment.positive => '\u{1F60A}',
+    Sentiment.neutral => '\u{1F610}',
+    Sentiment.mixedNegative => '\u{1F615}',
+    Sentiment.negative => '\u{1F61E}',
+  };
 }

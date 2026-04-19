@@ -4,6 +4,8 @@
 import 'dart:async';
 import 'dart:typed_data';
 
+import '../sdk/feedback_analyzer.dart';
+
 /// A single streamed event from the agent loop. The UI renders these in order.
 sealed class AgentEvent {
   const AgentEvent();
@@ -69,4 +71,8 @@ abstract class AgentService {
   Stream<AgentEvent> run(String userInput);
   Future<void> cancel();
   Future<String?> transcribe(Uint8List pcm);
+  Future<FeedbackReport> analyzeFeedback(
+    String transcript, {
+    Uint8List? pcmData,
+  });
 }

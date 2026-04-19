@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:developer' as developer;
 import 'dart:io';
 import 'dart:isolate';
 
@@ -11,6 +12,10 @@ import 'model_tier.dart';
 Future<void> _extractInIsolate(String zipPath, String outputDir) {
   final args = [zipPath, outputDir];
   return Isolate.run(() => extractFileToDisk(args[0], args[1]));
+}
+
+void _log(String message) {
+  developer.log(message, name: 'ModelDownloader');
 }
 
 sealed class DownloadEvent {
@@ -66,31 +71,30 @@ class ModelDownloader {
     required Directory destination,
   }) async {
     final dir = Directory('${destination.path}/${dirNameForTier(tier)}');
-    print('[ModelDownloader] existingModelPath check:');
-    print('[ModelDownloader]   destination: ${destination.path}');
-    print('[ModelDownloader]   dir: ${dir.path}');
+    _log('existingModelPath check:');
+    _log('  destination: ${destination.path}');
+    _log('  dir: ${dir.path}');
     final dirExists = await dir.exists();
-    print('[ModelDownloader]   dir exists: $dirExists');
+    _log('  dir exists: $dirExists');
     if (!dirExists) return null;
     try {
       final entries = await dir.list(recursive: true).toList();
-      print('[ModelDownloader]   contents (${entries.length} items):');
+      _log('  contents (${entries.length} items):');
       for (final e in entries.take(20)) {
-        print('[ModelDownloader]     ${e.path}');
+        _log('    ${e.path}');
       }
       if (entries.length > 20) {
-        print('[ModelDownloader]     ... and ${entries.length - 20} more');
+        _log('    ... and ${entries.length - 20} more');
       }
     } catch (e) {
-      print('[ModelDownloader]   failed to list dir: $e');
+      _log('  failed to list dir: $e');
     }
     final config = File('${dir.path}/config.txt');
     final configExists = await config.exists();
-    print('[ModelDownloader]   config.txt exists: $configExists');
+    _log('  config.txt exists: $configExists');
     if (!configExists) return null;
-    final hasWeights =
-        await dir.list().any((e) => e.path.endsWith('.weights'));
-    print('[ModelDownloader]   has .weights: $hasWeights');
+    final hasWeights = await dir.list().any((e) => e.path.endsWith('.weights'));
+    _log('  has .weights: $hasWeights');
     return hasWeights ? dir.path : null;
   }
 
@@ -122,8 +126,10 @@ class ModelDownloader {
     required Directory destination,
     http.Client? client,
   }) async* {
-    final existing =
-        await existingModelPath(tier: tier, destination: destination);
+    final existing = await existingModelPath(
+      tier: tier,
+      destination: destination,
+    );
     if (existing != null) {
       yield DownloadDone(existing);
       return;
@@ -164,7 +170,8 @@ class ModelDownloader {
         final needGb = (needed / (1024 * 1024 * 1024)).toStringAsFixed(1);
         final haveGb = (available / (1024 * 1024 * 1024)).toStringAsFixed(1);
         throw StateError(
-            'Not enough disk space: need ~${needGb}GB, only ${haveGb}GB available');
+          'Not enough disk space: need ~${needGb}GB, only ${haveGb}GB available',
+        );
       }
 
       if (await tmpExtractDir.exists()) {
@@ -183,8 +190,8 @@ class ModelDownloader {
       final progressController = StreamController<DownloadEvent>();
       progressController.add(DownloadProgress(0, total));
 
-      print('[ModelDownloader] Starting native download: $url');
-      print('[ModelDownloader]   to: ${destination.path}/$tmpZipName');
+      _log('Starting native download: $url');
+      _log('  to: ${destination.path}/$tmpZipName');
 
       final resultFuture = FileDownloader().download(
         task,
@@ -195,7 +202,7 @@ class ModelDownloader {
           }
         },
         onStatus: (status) {
-          print('[ModelDownloader] status: $status');
+          _log('status: $status');
           if (status == TaskStatus.complete ||
               status == TaskStatus.failed ||
               status == TaskStatus.canceled ||
@@ -211,15 +218,16 @@ class ModelDownloader {
 
       if (result.status != TaskStatus.complete) {
         throw StateError(
-            'Download failed with status: ${result.status}'
-            '${result.exception != null ? ' (${result.exception})' : ''}');
+          'Download failed with status: ${result.status}'
+          '${result.exception != null ? ' (${result.exception})' : ''}',
+        );
       }
 
       yield const DownloadVerifying();
       final zipPath = await task.filePath();
       final zipFile = File(zipPath);
       final zipSize = await zipFile.length();
-      print('[ModelDownloader] zip size: $zipSize');
+      _log('zip size: $zipSize');
       if (zipSize < 100 * 1024 * 1024) {
         throw StateError('Downloaded zip too small ($zipSize bytes)');
       }
@@ -232,16 +240,16 @@ class ModelDownloader {
         await targetDir.delete(recursive: true);
       }
       await tmpExtractDir.rename(targetDir.path);
-      print('[ModelDownloader] Renamed extract dir to: ${targetDir.path}');
+      _log('Renamed extract dir to: ${targetDir.path}');
 
       try {
         final extractedEntries = await targetDir.list(recursive: true).toList();
-        print('[ModelDownloader] Extracted ${extractedEntries.length} items:');
+        _log('Extracted ${extractedEntries.length} items:');
         for (final e in extractedEntries.take(20)) {
-          print('[ModelDownloader]   ${e.path}');
+          _log('  ${e.path}');
         }
       } catch (e) {
-        print('[ModelDownloader] Failed to list extracted: $e');
+        _log('Failed to list extracted: $e');
       }
 
       if (await zipFile.exists()) {
@@ -250,7 +258,10 @@ class ModelDownloader {
 
       try {
         await Process.run('setxattr', [
-          '-w', 'com.apple.MobileBackup', '1', targetDir.path,
+          '-w',
+          'com.apple.MobileBackup',
+          '1',
+          targetDir.path,
         ]);
       } catch (_) {}
 
@@ -293,7 +304,8 @@ class ModelDownloader {
         final needGb = (needed / (1024 * 1024 * 1024)).toStringAsFixed(1);
         final haveGb = (available / (1024 * 1024 * 1024)).toStringAsFixed(1);
         throw StateError(
-            'Not enough disk space: need ~${needGb}GB, only ${haveGb}GB available');
+          'Not enough disk space: need ~${needGb}GB, only ${haveGb}GB available',
+        );
       }
 
       if (await tmpExtractDir.exists()) {
@@ -310,8 +322,9 @@ class ModelDownloader {
 
       int? remoteSize;
       try {
-        final headResp =
-            await client.send(http.Request('HEAD', Uri.parse(url)));
+        final headResp = await client.send(
+          http.Request('HEAD', Uri.parse(url)),
+        );
         await headResp.stream.drain<void>();
         remoteSize = headResp.contentLength;
       } catch (_) {}
@@ -336,8 +349,7 @@ class ModelDownloader {
         }
 
         if (resp.statusCode != 200 && resp.statusCode != 206) {
-          throw HttpException(
-              'Unexpected status ${resp.statusCode} for $url');
+          throw HttpException('Unexpected status ${resp.statusCode} for $url');
         }
 
         int totalBytes = 0;
@@ -345,8 +357,7 @@ class ModelDownloader {
         if (resp.statusCode == 206 && contentRange != null) {
           final slash = contentRange.lastIndexOf('/');
           if (slash >= 0) {
-            totalBytes =
-                int.tryParse(contentRange.substring(slash + 1)) ?? 0;
+            totalBytes = int.tryParse(contentRange.substring(slash + 1)) ?? 0;
           }
         } else {
           totalBytes = resp.contentLength ?? 0;
@@ -377,7 +388,9 @@ class ModelDownloader {
         await sink.close();
 
         yield DownloadProgress(
-            received, totalBytes == 0 ? received : totalBytes);
+          received,
+          totalBytes == 0 ? received : totalBytes,
+        );
       }
 
       yield const DownloadVerifying();
@@ -385,7 +398,8 @@ class ModelDownloader {
       final expectedSize = remoteSize ?? 0;
       if (expectedSize > 0 && zipSize != expectedSize) {
         throw StateError(
-            'Downloaded zip size $zipSize != expected $expectedSize');
+          'Downloaded zip size $zipSize != expected $expectedSize',
+        );
       }
 
       yield const DownloadExtracting();
@@ -403,7 +417,10 @@ class ModelDownloader {
 
       try {
         await Process.run('setxattr', [
-          '-w', 'com.apple.MobileBackup', '1', targetDir.path,
+          '-w',
+          'com.apple.MobileBackup',
+          '1',
+          targetDir.path,
         ]);
       } catch (_) {}
 

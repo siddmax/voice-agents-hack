@@ -68,6 +68,8 @@
 	</array>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Ticketmaster uses the microphone so you can talk to the embedded Syndai agent.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Ticketmaster may save screen recordings you attach to bug reports.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Ticketmaster transcribes your speech on-device for the embedded Syndai agent.</string>
 	<key>NSCalendarsFullAccessUsageDescription</key>

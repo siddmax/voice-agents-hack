@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:typed_data';
 
+import '../sdk/feedback_analyzer.dart';
 import 'agent_service.dart';
 
 class MockAgentService implements AgentService {
@@ -200,4 +201,12 @@ class MockAgentService implements AgentService {
 
   @override
   Future<String?> transcribe(Uint8List pcm) async => null;
+
+  @override
+  Future<FeedbackReport> analyzeFeedback(
+    String transcript, {
+    Uint8List? pcmData,
+  }) async {
+    return FeedbackReport.fromTranscript(transcript);
+  }
 }

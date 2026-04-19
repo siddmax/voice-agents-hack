@@ -25,15 +25,37 @@ class BugReport {
     required this.uiState,
   });
 
-  factory BugReport.fromJson(Map<String, dynamic> json) {
+  factory BugReport.fromJson(
+    Map<String, dynamic> json, {
+    String evidenceText = '',
+  }) {
+    final title = (json['title'] as String?)?.trim() ?? 'Bug report';
+    final description = (json['description'] as String?)?.trim() ?? '';
+    final stepsContext = (json['steps_context'] as String?)?.trim() ?? '';
+    final expected = (json['expected'] as String?)?.trim() ?? '';
+    final actual = (json['actual'] as String?)?.trim() ?? '';
+    final uiState = (json['ui_state'] as String?)?.trim() ?? '';
+    final severity = _reconcileSeverity(
+      _normalizeSeverity(json['severity'] as String?),
+      evidenceText: [
+        evidenceText,
+        title,
+        description,
+        stepsContext,
+        expected,
+        actual,
+        uiState,
+      ].where((item) => item.isNotEmpty).join('\n'),
+    );
+
     return BugReport(
-      title: (json['title'] as String?)?.trim() ?? 'Bug report',
-      description: (json['description'] as String?)?.trim() ?? '',
-      stepsContext: (json['steps_context'] as String?)?.trim() ?? '',
-      expected: (json['expected'] as String?)?.trim() ?? '',
-      actual: (json['actual'] as String?)?.trim() ?? '',
-      severity: _normalizeSeverity(json['severity'] as String?),
-      uiState: (json['ui_state'] as String?)?.trim() ?? '',
+      title: title,
+      description: description,
+      stepsContext: stepsContext,
+      expected: expected,
+      actual: actual,
+      severity: severity,
+      uiState: uiState,
     );
   }
 
@@ -76,6 +98,44 @@ class BugReport {
     if (const {'critical', 'high', 'medium', 'low'}.contains(s)) return s;
     return 'medium';
   }
+
+  static String _reconcileSeverity(
+    String modelSeverity, {
+    required String evidenceText,
+  }) {
+    final inferred = _inferSeverity(evidenceText.toLowerCase());
+    if (_severityRank(inferred) > _severityRank(modelSeverity)) {
+      return inferred;
+    }
+    return modelSeverity;
+  }
+
+  static String _inferSeverity(String lower) {
+    if (RegExp(
+      r'\b(crash|data loss|lost data|double charge|charged twice|security|privacy|payment charged)\b',
+    ).hasMatch(lower)) {
+      return 'critical';
+    }
+    if (RegExp(
+      r"\b(stuck|blocked|broken|cannot|can't|cant|unable|spinner|timeout|forever|checkout|payment failed|purchase failed)\b",
+    ).hasMatch(lower)) {
+      return 'high';
+    }
+    if (RegExp(
+      r'\b(slow|confusing|glitch|incorrect|missing)\b',
+    ).hasMatch(lower)) {
+      return 'medium';
+    }
+    return 'low';
+  }
+
+  static int _severityRank(String severity) => switch (severity) {
+    'critical' => 4,
+    'high' => 3,
+    'medium' => 2,
+    'low' => 1,
+    _ => 2,
+  };
 }
 
 class ScreenAnalyzer {
@@ -94,7 +154,10 @@ class ScreenAnalyzer {
       'steps_context': {'type': 'string'},
       'expected': {'type': 'string'},
       'actual': {'type': 'string'},
-      'severity': {'type': 'string', 'enum': ['critical', 'high', 'medium', 'low']},
+      'severity': {
+        'type': 'string',
+        'enum': ['critical', 'high', 'medium', 'low'],
+      },
       'ui_state': {'type': 'string'},
     },
     'required': ['title', 'description', 'severity'],
@@ -127,7 +190,7 @@ class ScreenAnalyzer {
         pcmData: pcmData,
       );
       if (tempPath != null) _supportsVision = true;
-      return BugReport.fromJson(result);
+      return BugReport.fromJson(result, evidenceText: transcript);
     } catch (e) {
       if (tempPath != null && _supportsVision == null) {
         _supportsVision = false;
@@ -136,14 +199,16 @@ class ScreenAnalyzer {
       return BugReport.fallback(transcript);
     } finally {
       if (tempPath != null) {
-        try { await File(tempPath).delete(); } catch (_) {}
+        try {
+          await File(tempPath).delete();
+        } catch (_) {}
       }
     }
   }
 
   Future<BugReport> _analyzeTextOnly(String transcript) async {
     final messages = [
-      {'role': 'user', 'content': _buildPrompt(transcript)}
+      {'role': 'user', 'content': _buildPrompt(transcript)},
     ];
     try {
       final result = await engine.completeJson(
@@ -153,7 +218,7 @@ class ScreenAnalyzer {
         maxTokens: 1024,
         temperature: 0.1,
       );
-      return BugReport.fromJson(result);
+      return BugReport.fromJson(result, evidenceText: transcript);
     } catch (_) {
       return BugReport.fallback(transcript);
     }
@@ -162,7 +227,9 @@ class ScreenAnalyzer {
   Future<String> _writeToTempFile(Uint8List pngBytes) async {
     final resized = await _resizeIfNeeded(pngBytes);
     final dir = await getTemporaryDirectory();
-    final file = File('${dir.path}/voicebug_${DateTime.now().millisecondsSinceEpoch}.png');
+    final file = File(
+      '${dir.path}/voicebug_${DateTime.now().millisecondsSinceEpoch}.png',
+    );
     await file.writeAsBytes(resized);
     return file.path;
   }
@@ -192,8 +259,9 @@ class ScreenAnalyzer {
     final resizedFrame = await resizedCodec.getNextFrame();
     final resizedImage = resizedFrame.image;
 
-    final byteData =
-        await resizedImage.toByteData(format: ui.ImageByteFormat.png);
+    final byteData = await resizedImage.toByteData(
+      format: ui.ImageByteFormat.png,
+    );
     resizedImage.dispose();
     image.dispose();
 
