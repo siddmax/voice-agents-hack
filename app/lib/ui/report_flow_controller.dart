@@ -27,11 +27,15 @@ class ReproContext {
   final String selectedSeat;
   final String deviceInfo;
   final String log;
+  final String sessionSummary;
+  final BugReproEvidence? evidence;
 
   const ReproContext({
     required this.selectedSeat,
     required this.deviceInfo,
     required this.log,
+    this.sessionSummary = '',
+    this.evidence,
   });
 }
 
@@ -56,6 +60,7 @@ class ReportFlowController extends ChangeNotifier {
 
   final PcmCapture _recorder;
   final ScreenRecordingCapture _screenRecorder;
+  ScreenRecordingCapture get screenRecorder => _screenRecorder;
   final GitHubIssueService _issueService;
   final Future<String?> Function(Uint8List pcm) _transcribe;
   final Future<FeedbackReport> Function(String transcript, Uint8List? pcmData)
@@ -83,6 +88,9 @@ class ReportFlowController extends ChangeNotifier {
   String? _videoPath;
   String? get videoPath => _videoPath;
 
+  String? _videoCaptureNote;
+  String? get videoCaptureNote => _videoCaptureNote;
+
   String? _issueUrl;
   String? get issueUrl => _issueUrl;
 
@@ -91,6 +99,8 @@ class ReportFlowController extends ChangeNotifier {
 
   StreamSubscription<double>? _levelSub;
   Timer? _maxTimer;
+  DateTime? _recordingStartedAt;
+  DateTime? _recordingFinishedAt;
 
   void openChooser() {
     if (_state != ReportFlowState.idle) return;
@@ -109,6 +119,8 @@ class ReportFlowController extends ChangeNotifier {
     if (_state != ReportFlowState.choosingMode) return;
     _mode = ReportMode.bugRepro;
     _state = ReportFlowState.recordingRepro;
+    _recordingStartedAt = DateTime.now().toUtc();
+    _recordingFinishedAt = null;
     notifyListeners();
 
     final screenStarted = await _screenRecorder.start();
@@ -159,10 +171,8 @@ class ReportFlowController extends ChangeNotifier {
 
     _maxTimer?.cancel();
     _maxTimer = null;
-    final results = await Future.wait<Object?>([
-      _stopAudio(),
-      _screenRecorder.stop().catchError((_) => null),
-    ]);
+    _recordingFinishedAt = DateTime.now().toUtc();
+    final results = await Future.wait<Object?>([_stopAudio(), _stopScreen()]);
     final pcm = results[0] as Uint8List?;
     _videoPath = results[1] as String?;
     final transcript = await _transcribePcm(pcm);
@@ -175,10 +185,18 @@ class ReportFlowController extends ChangeNotifier {
 
     final ctx = _reproContext();
     _transcript = transcript;
-    _bugReport = BugReproReport.fromNarration(
-      transcript,
+    _bugReport = BugReproReport.fromEvidence(
+      ctx.evidence ??
+          BugReproEvidence(
+            selectedSeat: ctx.selectedSeat,
+            userActions: [
+              if (ctx.selectedSeat.trim().isNotEmpty)
+                'Select ${ctx.selectedSeat} from the ticket list.',
+            ],
+          ),
+      narrationTranscript: transcript,
       videoPath: _videoPath,
-      selectedSeat: ctx.selectedSeat,
+      videoUploadNote: _videoCaptureNote,
     );
     _state = ReportFlowState.reproPreview;
     notifyListeners();
@@ -190,6 +208,7 @@ class ReportFlowController extends ChangeNotifier {
     _feedbackReport = null;
     _bugReport = null;
     _videoPath = null;
+    _videoCaptureNote = null;
     if (_mode == ReportMode.feedback) {
       await _startAudioOnly();
     } else if (_mode == ReportMode.bugRepro) {
@@ -238,8 +257,14 @@ class ReportFlowController extends ChangeNotifier {
           videoUrl = await _issueService.uploadVideoFile(report.videoPath!);
           if (videoUrl == null) {
             uploadNote =
+                _issueService.lastUploadError ??
                 'Video upload unavailable. The local recording was captured but could not be attached.';
           }
+        } else {
+          uploadNote =
+              report.videoUploadNote ??
+              _videoCaptureNote ??
+              'ReplayKit did not return a local recording path.';
         }
         final hydrated = BugReproReport(
           title: report.title,
@@ -318,6 +343,24 @@ class ReportFlowController extends ChangeNotifier {
     return '';
   }
 
+  Future<String?> _stopScreen() async {
+    String? path;
+    try {
+      path = await _screenRecorder.stop();
+    } catch (error) {
+      _videoCaptureNote = error.toString();
+      return null;
+    }
+    if (path == null || path.trim().isEmpty) {
+      _videoCaptureNote =
+          _screenRecorder.lastError ??
+          'Screen recording stopped without returning a local file path.';
+      return null;
+    }
+    _videoCaptureNote = null;
+    return path;
+  }
+
   Future<void> _cleanupRecording() async {
     _maxTimer?.cancel();
     _maxTimer = null;
@@ -340,6 +383,9 @@ class ReportFlowController extends ChangeNotifier {
     _feedbackReport = null;
     _bugReport = null;
     _videoPath = null;
+    _videoCaptureNote = null;
+    _recordingStartedAt = null;
+    _recordingFinishedAt = null;
     _issueUrl = null;
     _errorMessage = null;
     _amplitude = 0;
@@ -401,9 +447,7 @@ ${report.plainTranscript}
   }
 
   String _formatBugBody(BugReproReport report, ReproContext context) {
-    final video = report.videoUrl != null
-        ? '[Screen recording](${report.videoUrl})'
-        : report.videoUploadNote ?? 'No video attached.';
+    final video = _formatVideoEvidence(report);
     final signals = report.observedSignals.isEmpty
         ? 'None extracted'
         : report.observedSignals.map((signal) => '- $signal').join('\n');
@@ -416,6 +460,7 @@ ${report.plainTranscript}
 
 **Severity:** ${report.severity}
 **Selected seat:** ${context.selectedSeat}
+${context.sessionSummary.isEmpty ? '' : '**Session:** ${context.sessionSummary}\n'}
 
 ### Summary
 ${report.summary}
@@ -435,10 +480,13 @@ $signals
 ### Video Evidence
 $video
 
-### Device
+### Capture Timeline
+${_formatCaptureTimeline(report.videoPath)}
+
+### Device & App Context
 ${context.deviceInfo}
 
-### Log
+### Session Evidence
 ```json
 ${context.log}
 ```
@@ -452,6 +500,35 @@ ${report.narrationTranscript}
 
 ---
 *Bug report compiled from voice narration and screen recording. No raw standalone audio stored.*''';
+  }
+
+  String _formatVideoEvidence(BugReproReport report) {
+    final lines = <String>[];
+    if (report.videoUrl != null) {
+      lines.add('- Status: uploaded');
+      lines.add('- Recording: [screen recording](${report.videoUrl})');
+    } else {
+      lines.add('- Status: upload unavailable');
+      lines.add('- Reason: ${report.videoUploadNote ?? 'No video attached.'}');
+    }
+    if (report.videoPath != null && report.videoPath!.isNotEmpty) {
+      lines.add('- Local path captured by app: `${report.videoPath}`');
+    }
+    return lines.join('\n');
+  }
+
+  String _formatCaptureTimeline(String? videoPath) {
+    final started = _recordingStartedAt?.toIso8601String() ?? 'unknown';
+    final finished = _recordingFinishedAt?.toIso8601String() ?? 'unknown';
+    final duration = _recordingStartedAt != null && _recordingFinishedAt != null
+        ? '${_recordingFinishedAt!.difference(_recordingStartedAt!).inMilliseconds} ms'
+        : 'unknown';
+    return '''| Field | Value |
+|---|---|
+| started_at_utc | $started |
+| finished_at_utc | $finished |
+| duration | $duration |
+| video_path_returned | ${videoPath == null || videoPath.isEmpty ? 'no' : 'yes'} |''';
   }
 
   String _titleFrom(String text) {

@@ -93,11 +93,23 @@ class _FakeRecorder implements PcmCapture {
 
 class _FakeScreenRecorder implements ScreenRecordingCapture {
   bool _recording = false;
+  bool _warmed = false;
   bool nextStart = true;
   String? nextPath = '/tmp/repro.mp4';
 
   @override
   bool get isRecording => _recording;
+
+  @override
+  bool get isWarmed => _warmed;
+
+  @override
+  String? get lastError => null;
+
+  @override
+  Future<void> warmUp() async {
+    _warmed = true;
+  }
 
   @override
   Future<void> cancel() async {
@@ -396,7 +408,8 @@ void main() {
 
     expect(find.text('Bug Report Preview'), findsOneWidget);
     expect(find.text('Video Evidence'), findsOneWidget);
-    expect(find.textContaining('Tap the seat'), findsWidgets);
+    expect(find.textContaining('Tap Buy Now'), findsWidgets);
+    expect(find.textContaining('error alert'), findsWidgets);
   });
 
   testWidgets(

@@ -49,11 +49,24 @@ class _FakeRecorder implements PcmCapture {
 
 class _FakeScreenRecorder implements ScreenRecordingCapture {
   bool _recording = false;
+  bool _warmed = true;
   bool nextStart = true;
   String? nextPath = '/tmp/repro.mp4';
+  String? stopError;
 
   @override
   bool get isRecording => _recording;
+
+  @override
+  bool get isWarmed => _warmed;
+
+  @override
+  String? get lastError => stopError;
+
+  @override
+  Future<void> warmUp() async {
+    _warmed = true;
+  }
 
   @override
   Future<void> cancel() async {
@@ -69,6 +82,7 @@ class _FakeScreenRecorder implements ScreenRecordingCapture {
   @override
   Future<String?> stop() async {
     _recording = false;
+    if (stopError != null) return null;
     return nextPath;
   }
 }
@@ -76,9 +90,13 @@ class _FakeScreenRecorder implements ScreenRecordingCapture {
 class _FakeIssueService extends GitHubIssueService {
   GitHubIssueRequest? lastRequest;
   String? nextVideoUrl = 'https://example.com/repro.mp4';
+  String? uploadError;
 
   @override
   bool get isReady => true;
+
+  @override
+  String? get lastUploadError => uploadError;
 
   @override
   Future<GitHubIssueSubmission> submit(GitHubIssueRequest request) async {
@@ -90,7 +108,10 @@ class _FakeIssueService extends GitHubIssueService {
   }
 
   @override
-  Future<String?> uploadVideoFile(String path) async => nextVideoUrl;
+  Future<String?> uploadVideoFile(String path) async {
+    uploadError = nextVideoUrl == null ? 'fake upload failed' : null;
+    return Future.value(nextVideoUrl);
+  }
 }
 
 ReportFlowController _controller({
@@ -111,8 +132,30 @@ ReportFlowController _controller({
         (transcript, _) async => FeedbackReport.fromTranscript(transcript),
     reproContext: () => const ReproContext(
       selectedSeat: 'Section 105, Row 10',
-      deviceInfo: 'Simulator - iPhone 17 Pro.',
-      log: '{"error":"Timeout"}',
+      deviceInfo:
+          '| Field | Value |\n|---|---|\n| os | iOS 18.0 |\n| device | iPhone Simulator |',
+      log:
+          '{"error":"Timeout","route":"/checkout/seat/select","code":"LIST_TO_VOID"}',
+      sessionSummary: 'Checkout repro session.',
+      evidence: BugReproEvidence(
+        selectedSeat: 'Section 105, Row 10',
+        screen: 'Checkout',
+        route: '/checkout/seat/select',
+        userActions: [
+          'Select Section 105, Row 10 from the ticket list.',
+          'Tap Buy Now.',
+        ],
+        expectedOutcome:
+            'Tapping Buy Now should complete the purchase flow or advance to the next checkout step.',
+        observedOutcome:
+            'An error alert is shown and checkout does not complete.',
+        observedSignals: [
+          'Buy Now action was attempted',
+          'Error alert or error state appeared',
+          'Purchase flow did not complete',
+          'Network request checkout.createIntent timed out with LIST_TO_VOID',
+        ],
+      ),
     ),
   );
 }
@@ -238,6 +281,40 @@ void main() {
     expect(ctrl.bugReport?.severity, 'high');
   });
 
+  test('repro flow converts narration into durable checkout steps', () async {
+    final ctrl = _controller(
+      recorder: _FakeRecorder(),
+      screenRecorder: _FakeScreenRecorder(),
+      issueService: _FakeIssueService(),
+      transcript:
+          'So I tap on the section row button order summary. I tap on the buy now button and I see this error alert pop up.',
+    );
+
+    ctrl.openChooser();
+    await ctrl.chooseBugRepro();
+    await ctrl.finishBugRepro();
+
+    expect(
+      ctrl.bugReport?.title,
+      'Checkout error after tapping Buy Now for Section 105, Row 10',
+    );
+    expect(ctrl.bugReport?.steps, [
+      'Select Section 105, Row 10 from the ticket list.',
+      'Tap Buy Now.',
+      'Observe the error alert instead of a completed checkout.',
+    ]);
+    expect(ctrl.bugReport?.summary, contains('shows an error'));
+    expect(ctrl.bugReport?.actualBehavior, contains('error alert'));
+    expect(ctrl.bugReport?.severity, 'high');
+    expect(ctrl.bugReport?.steps.join(' '), isNot(contains('So I tap')));
+    expect(
+      ctrl.bugReport?.observedSignals,
+      contains(
+        'Network request checkout.createIntent timed out with LIST_TO_VOID',
+      ),
+    );
+  });
+
   test(
     'repro submit includes video evidence url when upload succeeds',
     () async {
@@ -261,6 +338,63 @@ void main() {
         contains('https://example.com/repro.mp4'),
       );
       expect(issueService.lastRequest?.body, contains('Steps To Reproduce'));
+      expect(issueService.lastRequest?.body, contains('Device & App Context'));
+      expect(issueService.lastRequest?.body, contains('Capture Timeline'));
+      expect(issueService.lastRequest?.body, contains('Session Evidence'));
+      expect(issueService.lastRequest?.body, contains('Status: uploaded'));
+    },
+  );
+
+  test('repro submit records explicit video upload failure reason', () async {
+    final issueService = _FakeIssueService()..nextVideoUrl = null;
+    final ctrl = _controller(
+      recorder: _FakeRecorder(),
+      screenRecorder: _FakeScreenRecorder(),
+      issueService: issueService,
+      transcript: 'Tap the seat then tap buy now. The checkout stays stuck.',
+    );
+
+    ctrl.openChooser();
+    await ctrl.chooseBugRepro();
+    await ctrl.finishBugRepro();
+    await ctrl.submit();
+
+    expect(
+      issueService.lastRequest?.body,
+      contains('Status: upload unavailable'),
+    );
+    expect(issueService.lastRequest?.body, contains('fake upload failed'));
+    expect(issueService.lastRequest?.body, contains('/tmp/repro.mp4'));
+  });
+
+  test(
+    'repro preview and submit preserve screen recorder stop failure',
+    () async {
+      final issueService = _FakeIssueService();
+      final ctrl = _controller(
+        recorder: _FakeRecorder(),
+        screenRecorder: _FakeScreenRecorder()
+          ..nextPath = null
+          ..stopError =
+              'NO_VIDEO_FRAMES: ReplayKit stopped before delivering any video frames.',
+        issueService: issueService,
+        transcript: 'Tap the seat then tap buy now. The checkout stays stuck.',
+      );
+
+      ctrl.openChooser();
+      await ctrl.chooseBugRepro();
+      await ctrl.finishBugRepro();
+
+      expect(ctrl.bugReport?.videoPath, isNull);
+      expect(ctrl.bugReport?.videoUploadNote, contains('NO_VIDEO_FRAMES'));
+
+      await ctrl.submit();
+
+      expect(issueService.lastRequest?.body, contains('NO_VIDEO_FRAMES'));
+      expect(
+        issueService.lastRequest?.body,
+        contains('video_path_returned | no'),
+      );
     },
   );
 }

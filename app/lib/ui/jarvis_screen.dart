@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -6,9 +7,11 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../agent/agent_service.dart';
+import '../sdk/device_metadata.dart';
 import '../sdk/feedback_analyzer.dart';
 import '../sdk/github_issue_service.dart';
 import '../sdk/screen_recording_capture.dart';
+import '../sdk/view_capture_recorder.dart';
 import '../voice/audio_recorder.dart';
 import '../voice/tts.dart';
 import 'activity_feed.dart';
@@ -21,9 +24,14 @@ import 'settings_sheet.dart';
 
 const _demoTranscript =
     "The checkout isn't loading for Section 105. It just stays on the spinner.";
-const _demoDeviceInfo = 'Simulator - iPhone 17 Pro.';
-const _demoLog =
-    '{"error":"Timeout","code":"LIST_TO_VOID","seat":"Section 105 Row 10","route":"/checkout/seat/select"}';
+const _demoDeviceInfoTable =
+    '| Field | Value |\n'
+    '|---|---|\n'
+    '| os | Simulator |\n'
+    '| device | iPhone 17 Pro |\n'
+    '| app_version | 1.0.0 |\n'
+    '| screen_resolution | unknown |\n'
+    '| locale | unknown |';
 
 const _seatOptions = <_SeatOption>[
   _SeatOption('s105-r10', 'Section 105, Row 10', '\$350', highlighted: true),
@@ -69,6 +77,9 @@ class _JarvisScreenState extends State<JarvisScreen> {
   String? _issueUrl;
   bool _showSuccess = false;
   bool _completingListening = false;
+  bool _deviceMetadataRequested = false;
+  String _deviceInfoMarkdown = _demoDeviceInfoTable;
+  final DateTime _sessionStartedAt = DateTime.now().toUtc();
   late final GitHubIssueService _githubIssueService;
   late final PcmCapture _recorder;
   late final ReportFlowController _reportFlow;
@@ -80,7 +91,7 @@ class _JarvisScreenState extends State<JarvisScreen> {
     _recorder = widget.recorder ?? PcmRecorder();
     _reportFlow = ReportFlowController(
       recorder: _recorder,
-      screenRecorder: widget.screenRecorder ?? NativeScreenRecordingCapture(),
+      screenRecorder: widget.screenRecorder ?? ViewCaptureRecorder(),
       issueService: _githubIssueService,
       transcribe: (pcm) {
         final chat = _chatRef;
@@ -103,10 +114,32 @@ class _JarvisScreenState extends State<JarvisScreen> {
       },
       reproContext: () => ReproContext(
         selectedSeat: _selectedSeatLabel(),
-        deviceInfo: _demoDeviceInfo,
-        log: _demoLog,
+        deviceInfo: _deviceInfoMarkdown,
+        log: _buildReproLog(),
+        sessionSummary:
+            'Ticket checkout repro for ${_selectedSeatLabel()} in the Warriors listing.',
+        evidence: BugReproEvidence(
+          selectedSeat: _selectedSeatLabel(),
+          screen: 'Checkout',
+          route: '/checkout/seat/select',
+          userActions: [
+            'Select ${_selectedSeatLabel()} from the ticket list.',
+            'Tap Buy Now.',
+          ],
+          expectedOutcome:
+              'Tapping Buy Now should complete the purchase flow or advance to the next checkout step.',
+          observedOutcome:
+              'An error alert is shown and checkout does not complete.',
+          observedSignals: const [
+            'Buy Now action was attempted',
+            'Error alert or error state appeared',
+            'Purchase flow did not complete',
+            'Network request checkout.createIntent timed out with LIST_TO_VOID',
+          ],
+        ),
       ),
     );
+    unawaited(_reportFlow.screenRecorder.warmUp());
     if (widget.startupError != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
@@ -123,12 +156,24 @@ class _JarvisScreenState extends State<JarvisScreen> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    _collectDeviceMetadata();
     final chat = context.read<ChatController>();
     if (!identical(_chatRef, chat)) {
       _chatRef?.removeListener(_onChatChanged);
       _chatRef = chat;
       chat.addListener(_onChatChanged);
     }
+  }
+
+  void _collectDeviceMetadata() {
+    if (_deviceMetadataRequested) return;
+    _deviceMetadataRequested = true;
+    unawaited(
+      DeviceMetadata.collect(context).then((metadata) {
+        if (!mounted) return;
+        setState(() => _deviceInfoMarkdown = metadata.toMarkdownTable());
+      }),
+    );
   }
 
   void _onChatChanged() {
@@ -379,8 +424,8 @@ class _JarvisScreenState extends State<JarvisScreen> {
     await chat.send(
       'Analyze this Ticketmaster checkout failure and prepare a GitHub-ready bug report.\n'
       'Transcript: $transcript\n'
-      'Device Info: $_demoDeviceInfo\n'
-      'The Log: $_demoLog\n'
+      'Device Info: $_deviceInfoMarkdown\n'
+      'The Log: ${_buildReproLog()}\n'
       'Selected Seat: ${_selectedSeatLabel()}\n'
       'Observed Behavior: The list item enters a spinner state and never transitions into checkout.\n'
       'Expected Behavior: Selecting the ticket should open checkout immediately.',
@@ -481,11 +526,11 @@ class _JarvisScreenState extends State<JarvisScreen> {
 $transcript
 
 **Device Info:**  
-$_demoDeviceInfo
+$_deviceInfoMarkdown
 
 **The Log:**  
 ```json
-$_demoLog
+${_buildReproLog()}
 ```
 
 **Selected Seat:**  
@@ -497,6 +542,42 @@ The list item enters a spinner state and never transitions into checkout.
 **Expected Behavior:**  
 Selecting the ticket should open checkout immediately.
 ''';
+  }
+
+  String _buildReproLog() {
+    const encoder = JsonEncoder.withIndent('  ');
+    return encoder.convert({
+      'session': {
+        'started_at_utc': _sessionStartedAt.toIso8601String(),
+        'reporting_surface': 'voicebug_repro_flow',
+        'app_route': '/checkout/seat/select',
+      },
+      'selected_seat': {'id': _selectedSeatId, 'label': _selectedSeatLabel()},
+      'user_actions': [
+        'open_report_picker',
+        'choose_reproduce_bug',
+        'select_ticket:${_selectedSeatLabel()}',
+        'tap_buy_now',
+      ],
+      'ui_state': {
+        'screen': 'checkout',
+        'primary_cta': 'Buy Now',
+        'expected_transition': 'checkout completes or advances',
+        'observed_transition': 'error alert shown',
+      },
+      'network': {
+        'operation': 'checkout.createIntent',
+        'route': '/checkout/seat/select',
+        'seat': _selectedSeatLabel(),
+        'status': 'timeout',
+        'code': 'LIST_TO_VOID',
+      },
+      'diagnostics': {
+        'capture_mode': 'screen_recording_and_voice_narration',
+        'raw_audio_stored': false,
+        'screen_recording_expected': true,
+      },
+    });
   }
 
   void _resetDemo() {

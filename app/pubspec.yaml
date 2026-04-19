@@ -49,7 +49,6 @@ dependencies:
   archive: ^3.6.1
   background_downloader: ^9.4.4
   record: ^6.2.0
-  flutter_screen_recording: ^2.0.25
   video_player: ^2.11.1
 
 dev_dependencies:
