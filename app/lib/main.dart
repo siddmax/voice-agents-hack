@@ -35,11 +35,25 @@ Future<void> main() async {
   Directory? docsDir;
   String? existingPath;
   try {
-    docsDir = await getApplicationDocumentsDirectory();
+    docsDir = await getApplicationSupportDirectory();
     existingPath = await ModelDownloader.existingModelPath(
       tier: tier,
       destination: docsDir,
     );
+    // Migrate from old Documents location if model exists there.
+    if (existingPath == null) {
+      final oldDir = await getApplicationDocumentsDirectory();
+      final oldPath = await ModelDownloader.existingModelPath(
+        tier: tier,
+        destination: oldDir,
+      );
+      if (oldPath != null) {
+        final dirName = ModelDownloader.dirNameForTier(tier);
+        await docsDir.create(recursive: true);
+        await Directory(oldPath).rename('${docsDir.path}/$dirName');
+        existingPath = '${docsDir.path}/$dirName';
+      }
+    }
   } catch (_) {
     // Tests / headless environments may not have path_provider wired up.
   }

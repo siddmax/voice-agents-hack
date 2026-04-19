@@ -3,7 +3,6 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import '../sdk/capture_flow.dart';
-import '../sdk/screen_analyzer.dart';
 
 class VoiceBugOverlay extends StatelessWidget {
   final CaptureFlowController controller;

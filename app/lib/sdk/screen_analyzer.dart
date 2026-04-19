@@ -105,12 +105,11 @@ class ScreenAnalyzer {
     Uint8List? screenshotPng,
     Uint8List? pcmData,
   }) async {
-    final useImage = screenshotPng != null && _supportsVision != false;
     String? tempPath;
 
     try {
-      if (useImage) {
-        tempPath = await _writeToTempFile(screenshotPng!);
+      if (screenshotPng != null && _supportsVision != false) {
+        tempPath = await _writeToTempFile(screenshotPng);
       }
 
       final message = <String, dynamic>{
@@ -127,10 +126,10 @@ class ScreenAnalyzer {
         temperature: 0.1,
         pcmData: pcmData,
       );
-      if (useImage) _supportsVision = true;
+      if (tempPath != null) _supportsVision = true;
       return BugReport.fromJson(result);
     } catch (e) {
-      if (useImage && _supportsVision == null) {
+      if (tempPath != null && _supportsVision == null) {
         _supportsVision = false;
         return _analyzeTextOnly(transcript);
       }

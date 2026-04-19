@@ -19,7 +19,8 @@ class DeviceMetadata {
     required this.locale,
   });
 
-  static Future<DeviceMetadata> collect(BuildContext context) async {
+  static Future<DeviceMetadata> collectWithScreen(String screenResolution) async {
+    final locale = Platform.localeName;
     final deviceInfo = DeviceInfoPlugin();
     String os = Platform.operatingSystem;
     String device = 'Unknown';
@@ -44,12 +45,6 @@ class DeviceMetadata {
       appVersion = packageInfo.version;
     } catch (_) {}
 
-    final mq = MediaQuery.of(context);
-    final size = mq.size * mq.devicePixelRatio;
-    final screenResolution = '${size.width.toInt()}x${size.height.toInt()}';
-
-    final locale = Platform.localeName;
-
     return DeviceMetadata(
       os: os,
       device: device,
@@ -57,6 +52,12 @@ class DeviceMetadata {
       screenResolution: screenResolution,
       locale: locale,
     );
+  }
+
+  static Future<DeviceMetadata> collect(BuildContext context) {
+    final mq = MediaQuery.of(context);
+    final size = mq.size * mq.devicePixelRatio;
+    return collectWithScreen('${size.width.toInt()}x${size.height.toInt()}');
   }
 
   Map<String, String> toMap() => {

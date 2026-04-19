@@ -7,9 +7,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:syndai/agent/agent_service.dart';
 import 'package:syndai/main.dart';
-import 'package:syndai/ui/activity_feed.dart';
 import 'package:syndai/ui/chat_controller.dart';
-import 'package:syndai/ui/jarvis_orb.dart';
+import 'package:syndai/ui/drop_guard_dashboard.dart';
 import 'package:syndai/ui/jarvis_screen.dart';
 
 class _FakeAgent implements AgentService {
@@ -33,12 +32,11 @@ void main() {
     SharedPreferences.setMockInitialValues({});
   });
 
-  testWidgets('JarvisScreen mounts with orb and feed', (tester) async {
+  testWidgets('JarvisScreen mounts with dashboard', (tester) async {
     await tester.pumpWidget(SyndaiApp(agentFactory: fakeAgent));
     await tester.pump();
     expect(find.byType(JarvisScreen), findsOneWidget);
-    expect(find.byType(JarvisOrb), findsOneWidget);
-    expect(find.byType(ActivityFeed), findsOneWidget);
+    expect(find.byType(DropGuardDashboard), findsOneWidget);
   });
 
   testWidgets('sending renders tool-call chip and token from event stream',

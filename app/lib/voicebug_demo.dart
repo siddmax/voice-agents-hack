@@ -180,7 +180,7 @@ class _Product {
 
 class _ProductDetailPage extends StatelessWidget {
   final _Product product;
-  const _ProductDetailPage({super.key, required this.product});
+  const _ProductDetailPage({required this.product});
 
   @override
   Widget build(BuildContext context) {

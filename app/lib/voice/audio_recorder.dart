@@ -6,7 +6,8 @@ import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
 
 class PcmRecorder {
-  final AudioRecorder _recorder = AudioRecorder();
+  AudioRecorder? _recorderInstance;
+  AudioRecorder get _recorder => _recorderInstance ??= AudioRecorder();
   String? _path;
   bool _recording = false;
   Timer? _maxTimer;
@@ -79,6 +80,6 @@ class PcmRecorder {
 
   void dispose() {
     cancel();
-    _recorder.dispose();
+    _recorderInstance?.dispose();
   }
 }

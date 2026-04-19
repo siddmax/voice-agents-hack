@@ -49,6 +49,13 @@ void main() {
 
       final client = _FakeClient((req) async {
         expect(req.url.toString(), contains('gemma-4-e2b-it'));
+        if (req.method == 'HEAD') {
+          return http.StreamedResponse(
+            const Stream.empty(),
+            200,
+            contentLength: zipBytes.length,
+          );
+        }
         return http.StreamedResponse(
           _chunked(zipBytes),
           200,
@@ -100,6 +107,13 @@ void main() {
 
       var sawRangeHeader = false;
       final client = _FakeClient((req) async {
+        if (req.method == 'HEAD') {
+          return http.StreamedResponse(
+            const Stream.empty(),
+            200,
+            contentLength: zipBytes.length,
+          );
+        }
         final rh = req.headers['Range'] ?? req.headers['range'];
         sawRangeHeader = rh != null && rh.startsWith('bytes=$prefixLen-');
         final rest = zipBytes.sublist(prefixLen);
@@ -138,6 +152,13 @@ void main() {
       final dir = await _tmpDir('mdl_fail_');
 
       final client = _FakeClient((req) async {
+        if (req.method == 'HEAD') {
+          return http.StreamedResponse(
+            const Stream.empty(),
+            200,
+            contentLength: 9999,
+          );
+        }
         final ctl = StreamController<List<int>>();
         scheduleMicrotask(() {
           ctl.add(List<int>.filled(16, 0));

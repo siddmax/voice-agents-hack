@@ -43,8 +43,7 @@ class _ModelDownloadScreenState extends State<ModelDownloadScreen> {
   String? _error;
   String? _donePath;
 
-  DateTime? _lastProgressAt;
-  int _lastProgressBytes = 0;
+  DateTime? _downloadStartedAt;
   double _bytesPerSec = 0;
 
   @override
@@ -70,8 +69,7 @@ class _ModelDownloadScreenState extends State<ModelDownloadScreen> {
       _error = null;
       _donePath = null;
       _bytesPerSec = 0;
-      _lastProgressAt = null;
-      _lastProgressBytes = 0;
+      _downloadStartedAt = null;
     });
     final dl = widget.downloader ?? ModelDownloader();
     _sub = dl
@@ -87,15 +85,11 @@ class _ModelDownloadScreenState extends State<ModelDownloadScreen> {
     switch (ev) {
       case DownloadProgress(:final bytesReceived, :final totalBytes):
         final now = DateTime.now();
-        if (_lastProgressAt != null) {
-          final dt = now.difference(_lastProgressAt!).inMilliseconds;
-          if (dt > 0) {
-            final dBytes = bytesReceived - _lastProgressBytes;
-            _bytesPerSec = (dBytes * 1000) / dt;
-          }
+        _downloadStartedAt ??= now;
+        final elapsed = now.difference(_downloadStartedAt!).inMilliseconds;
+        if (elapsed > 500 && bytesReceived > 0) {
+          _bytesPerSec = (bytesReceived * 1000) / elapsed;
         }
-        _lastProgressAt = now;
-        _lastProgressBytes = bytesReceived;
         setState(() {
           _bytesReceived = bytesReceived;
           _totalBytes = totalBytes;

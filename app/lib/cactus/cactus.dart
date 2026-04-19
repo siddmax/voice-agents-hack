@@ -500,7 +500,7 @@ extension Utf8PointerExtension on Pointer<Utf8> {
     final codeUnits = <int>[];
     var i = 0;
     while (true) {
-      final byte = cast<Uint8>().elementAt(i).value;
+      final byte = (cast<Uint8>() + i).value;
       if (byte == 0) break;
       codeUnits.add(byte);
       i++;
@@ -1091,20 +1091,28 @@ int cactusIndexAdd(
   final embDim = embeddings[0].length;
 
   final idsPtr = calloc<Int32>(count);
-  for (var i = 0; i < count; i++) idsPtr[i] = ids[i];
+  for (var i = 0; i < count; i++) {
+    idsPtr[i] = ids[i];
+  }
 
   final documentsPtr = calloc<Pointer<Utf8>>(count);
-  for (var i = 0; i < count; i++) documentsPtr[i] = documents[i].toNativeUtf8();
+  for (var i = 0; i < count; i++) {
+    documentsPtr[i] = documents[i].toNativeUtf8();
+  }
 
   final metadatasPtr = metadatas != null ? calloc<Pointer<Utf8>>(count) : nullptr;
   if (metadatas != null) {
-    for (var i = 0; i < count; i++) metadatasPtr[i] = metadatas[i].toNativeUtf8();
+    for (var i = 0; i < count; i++) {
+      metadatasPtr[i] = metadatas[i].toNativeUtf8();
+    }
   }
 
   final embeddingsPtr = calloc<Pointer<Float>>(count);
   for (var i = 0; i < count; i++) {
     final embPtr = calloc<Float>(embeddings[i].length);
-    for (var j = 0; j < embeddings[i].length; j++) embPtr[j] = embeddings[i][j];
+    for (var j = 0; j < embeddings[i].length; j++) {
+      embPtr[j] = embeddings[i][j];
+    }
     embeddingsPtr[i] = embPtr;
   }
 
@@ -1130,7 +1138,9 @@ int cactusIndexAdd(
 /// Removes documents by ID.
 int cactusIndexDelete(CactusIndexT index, List<int> ids) {
   final idsPtr = calloc<Int32>(ids.length);
-  for (var i = 0; i < ids.length; i++) idsPtr[i] = ids[i];
+  for (var i = 0; i < ids.length; i++) {
+    idsPtr[i] = ids[i];
+  }
 
   try {
     final result = _cactusIndexDelete(index, idsPtr, ids.length);
@@ -1149,7 +1159,9 @@ String cactusIndexGet(CactusIndexT index, List<int> ids) {
   if (count == 0) return '{"results":[]}';
 
   final idsPtr = calloc<Int32>(count);
-  for (var i = 0; i < count; i++) idsPtr[i] = ids[i];
+  for (var i = 0; i < count; i++) {
+    idsPtr[i] = ids[i];
+  }
 
   const docBufSize = 4096;
   const embBufSize = 4096;
@@ -1193,7 +1205,11 @@ String cactusIndexGet(CactusIndexT index, List<int> ids) {
       final meta = metaStr.isNotEmpty ? metaStr : null;
       final embDim = embBufferSizes[i];
       sb.write('{"document":"$doc"');
-      if (meta != null) sb.write(',"metadata":"$meta"'); else sb.write(',"metadata":null');
+      if (meta != null) {
+        sb.write(',"metadata":"$meta"');
+      } else {
+        sb.write(',"metadata":null');
+      }
       sb.write(',"embedding":[');
       for (var j = 0; j < embDim; j++) {
         if (j > 0) sb.write(',');
@@ -1223,7 +1239,9 @@ String cactusIndexGet(CactusIndexT index, List<int> ids) {
 String cactusIndexQuery(CactusIndexT index, List<double> embedding, String? optionsJson) {
   const resultCapacity = 1000;
   final embPtr = calloc<Float>(embedding.length);
-  for (var i = 0; i < embedding.length; i++) embPtr[i] = embedding[i];
+  for (var i = 0; i < embedding.length; i++) {
+    embPtr[i] = embedding[i];
+  }
 
   final embPtrPtr = calloc<Pointer<Float>>(1);
   embPtrPtr[0] = embPtr;

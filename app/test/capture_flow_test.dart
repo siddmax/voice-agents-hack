@@ -7,9 +7,33 @@ import 'package:syndai/sdk/capture_flow.dart';
 import 'package:syndai/sdk/github_client.dart';
 import 'package:syndai/sdk/screen_analyzer.dart';
 import 'package:syndai/sdk/screenshot_capture.dart';
+import 'package:syndai/voice/audio_recorder.dart';
 import 'package:syndai/voice/stt.dart';
 
 import 'fake_cactus_engine.dart';
+
+class _FakePcmRecorder extends PcmRecorder {
+  @override
+  bool get isRecording => false;
+
+  @override
+  Future<bool> startRecording() async => true;
+
+  @override
+  Future<String?> stopRecording() async => null;
+
+  @override
+  Future<Uint8List?> stopAndGetPcm() async => null;
+
+  @override
+  Stream<double> get amplitude => const Stream.empty();
+
+  @override
+  Future<void> cancel() async {}
+
+  @override
+  void dispose() {}
+}
 
 class _FakeStt extends SpeechToTextService {
   SttStartResult nextResult = SttStartResult.started;
@@ -80,6 +104,7 @@ void main() {
         stt: stt,
         github: github,
         screenshot: screenshot,
+        recorder: _FakePcmRecorder(),
       );
       expect(ctrl.state, CaptureState.idle);
     });
@@ -90,6 +115,7 @@ void main() {
         stt: stt,
         github: github,
         screenshot: screenshot,
+        recorder: _FakePcmRecorder(),
       );
 
       ctrl.cancel();
@@ -111,6 +137,7 @@ void main() {
         stt: stt,
         github: github,
         screenshot: screenshot,
+        recorder: _FakePcmRecorder(),
       );
 
       await tester.pumpWidget(Builder(builder: (context) {
@@ -131,6 +158,7 @@ void main() {
         stt: stt,
         github: github,
         screenshot: screenshot,
+        recorder: _FakePcmRecorder(),
       );
 
       await tester.pumpWidget(Builder(builder: (context) {
@@ -150,6 +178,7 @@ void main() {
         stt: stt,
         github: github,
         screenshot: screenshot,
+        recorder: _FakePcmRecorder(),
       );
 
       await tester.pumpWidget(Builder(builder: (context) {
@@ -169,6 +198,7 @@ void main() {
         stt: stt,
         github: github,
         screenshot: screenshot,
+        recorder: _FakePcmRecorder(),
       );
 
       // Manually set state to listening to test stopAndAnalyze
@@ -185,6 +215,7 @@ void main() {
         stt: stt,
         github: github,
         screenshot: screenshot,
+        recorder: _FakePcmRecorder(),
       );
 
       final report = BugReport.fallback('test');
@@ -198,6 +229,7 @@ void main() {
         stt: stt,
         github: github,
         screenshot: screenshot,
+        recorder: _FakePcmRecorder(),
       );
 
       ctrl.dispose();

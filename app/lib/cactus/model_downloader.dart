@@ -1,12 +1,12 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:isolate';
 
 import 'package:archive/archive_io.dart';
 import 'package:http/http.dart' as http;
 
 import 'model_tier.dart';
 
-/// Events emitted by [ModelDownloader.download].
 sealed class DownloadEvent {
   const DownloadEvent();
 }
@@ -37,33 +37,24 @@ class DownloadFailed extends DownloadEvent {
   const DownloadFailed(this.reason);
 }
 
-/// Downloads Cactus-Compute's pre-converted Gemma 4 INT4 weights on first
-/// launch into the app's documents directory.
-///
-/// URL pattern confirmed against `cactus/python/src/downloads.py`:
-///   `https://huggingface.co/Cactus-Compute/<ModelId>/resolve/main/weights/<file>.zip`
-///
-/// The zip contains the weight files at the archive root. We atomically
-/// extract into `<destination>/gemma-4-<tier>-it/` so interrupted downloads
-/// don't leave a half-populated directory that would fool `existingModelPath`.
 class ModelDownloader {
-  /// HuggingFace zip URLs. `apple` variant is what the cactus CLI grabs first
-  /// for macOS/iOS; it's also what we use for Android — the INT4 layout is the
-  /// same. (If Android-specific builds show up later we can branch here.)
   static const _e2bUrl =
       'https://huggingface.co/Cactus-Compute/gemma-4-E2B-it/resolve/main/weights/gemma-4-e2b-it-int4-apple.zip';
   static const _e4bUrl =
       'https://huggingface.co/Cactus-Compute/gemma-4-E4B-it/resolve/main/weights/gemma-4-e4b-it-int4-apple.zip';
 
+  static const _e2bZipSize = 4679429616; // bytes, from HuggingFace
+  static const _e4bZipSize = 8500000000; // approximate
+
   static String urlForTier(ModelTier tier) =>
       tier == ModelTier.e4b ? _e4bUrl : _e2bUrl;
 
-  /// Directory name used for the final extracted model.
   static String dirNameForTier(ModelTier tier) =>
       'gemma-4-${tier == ModelTier.e4b ? 'e4b' : 'e2b'}-it';
 
-  /// Returns the on-disk model path for the given tier if it already exists
-  /// and is non-empty, else null.
+  static int expectedZipSize(ModelTier tier) =>
+      tier == ModelTier.e4b ? _e4bZipSize : _e2bZipSize;
+
   static Future<String?> existingModelPath({
     required ModelTier tier,
     required Directory destination,
@@ -74,9 +65,25 @@ class ModelDownloader {
     return hasContent ? dir.path : null;
   }
 
-  /// Stream the download/verify/extract lifecycle for [tier], materialising
-  /// the model in [destination]. Supports resumption via HTTP `Range:` if
-  /// a partial `.tmp-<tier>.zip` exists from a previous run.
+  /// Checks available disk space. Returns null if check fails.
+  static Future<int?> _availableDiskBytes(String path) async {
+    try {
+      final stat = await FileStat.stat(path);
+      if (stat.type == FileSystemEntityType.notFound) return null;
+      // dart:io doesn't expose statvfs; use 'df' on Apple/Linux.
+      final result = await Process.run('df', ['-k', path]);
+      if (result.exitCode != 0) return null;
+      final lines = (result.stdout as String).split('\n');
+      if (lines.length < 2) return null;
+      final parts = lines[1].split(RegExp(r'\s+'));
+      if (parts.length < 4) return null;
+      final availKb = int.tryParse(parts[3]);
+      return availKb == null ? null : availKb * 1024;
+    } catch (_) {
+      return null;
+    }
+  }
+
   Stream<DownloadEvent> download({
     required ModelTier tier,
     required Directory destination,
@@ -92,7 +99,6 @@ class ModelDownloader {
     final tmpExtractDir =
         Directory('${destination.path}/.tmp-$tierName');
 
-    // Fast path: already installed.
     final existing =
         await existingModelPath(tier: tier, destination: destination);
     if (existing != null) {
@@ -103,101 +109,117 @@ class ModelDownloader {
 
     try {
       await destination.create(recursive: true);
+
+      // ---- Disk space check ----
+      final needed = expectedZipSize(tier) * 2.2; // zip + extracted + margin
+      final available = await _availableDiskBytes(destination.path);
+      if (available != null && available < needed) {
+        final needGb = (needed / (1024 * 1024 * 1024)).toStringAsFixed(1);
+        final haveGb = (available / (1024 * 1024 * 1024)).toStringAsFixed(1);
+        throw StateError(
+            'Not enough disk space: need ~${needGb}GB, only ${haveGb}GB available');
+      }
+
       if (await tmpExtractDir.exists()) {
         await tmpExtractDir.delete(recursive: true);
       }
 
       // ---- Download phase (resumable) ----
       int startByte = 0;
-      if (await tmpZip.exists()) {
+      final tmpZipExists = await tmpZip.exists();
+      if (tmpZipExists) {
         startByte = await tmpZip.length();
       }
 
       final url = urlForTier(tier);
-      final req = http.Request('GET', Uri.parse(url));
-      if (startByte > 0) {
-        req.headers['Range'] = 'bytes=$startByte-';
-      }
 
-      final resp = await httpClient.send(req);
-
-      if (resp.statusCode != 200 && resp.statusCode != 206) {
-        throw HttpException(
-            'Unexpected status ${resp.statusCode} for $url');
-      }
-
-      // Compute total bytes: if resumed (206), Content-Range tells us the
-      // complete size; otherwise Content-Length is the total.
-      int totalBytes = 0;
-      final contentRange = resp.headers['content-range'];
-      if (resp.statusCode == 206 && contentRange != null) {
-        final slash = contentRange.lastIndexOf('/');
-        if (slash >= 0) {
-          totalBytes = int.tryParse(contentRange.substring(slash + 1)) ?? 0;
-        }
-      } else {
-        totalBytes = resp.contentLength ?? 0;
-        if (startByte > 0 && resp.statusCode == 200) {
-          // Server ignored our Range header — restart from scratch.
-          await tmpZip.writeAsBytes(const <int>[], flush: true);
-          startByte = 0;
-        }
-      }
-
-      final sink = tmpZip.openWrite(
-        mode: startByte > 0 ? FileMode.append : FileMode.write,
-      );
-
-      var received = startByte;
-      DateTime lastEmit = DateTime.fromMillisecondsSinceEpoch(0);
-      yield DownloadProgress(received, totalBytes);
-
-      await for (final chunk in resp.stream) {
-        sink.add(chunk);
-        received += chunk.length;
-        final now = DateTime.now();
-        if (now.difference(lastEmit).inMilliseconds >= 250) {
-          lastEmit = now;
-          yield DownloadProgress(received, totalBytes);
-        }
-      }
-      await sink.flush();
-      await sink.close();
-
-      yield DownloadProgress(received, totalBytes == 0 ? received : totalBytes);
-
-      // ---- Verify + Extract phase ----
-      yield const DownloadVerifying();
-      // (Hash verification is a v2 item per plan; we only check size here.)
-      final zipSize = await tmpZip.length();
-      if (totalBytes > 0 && zipSize != totalBytes) {
-        throw StateError(
-            'Downloaded zip size $zipSize != expected $totalBytes');
-      }
-
-      yield const DownloadExtracting();
-      await tmpExtractDir.create(recursive: true);
-      final inputStream = InputFileStream(tmpZip.path);
+      int? remoteSize;
       try {
-        final archive = ZipDecoder().decodeBuffer(inputStream);
-        for (final entry in archive.files) {
-          final outPath = '${tmpExtractDir.path}/${entry.name}';
-          if (entry.isFile) {
-            final f = File(outPath);
-            await f.parent.create(recursive: true);
-            final out = OutputFileStream(outPath);
-            try {
-              entry.writeContent(out);
-            } finally {
-              await out.close();
-            }
-          } else {
-            await Directory(outPath).create(recursive: true);
+        final headResp =
+            await httpClient.send(http.Request('HEAD', Uri.parse(url)));
+        await headResp.stream.drain<void>();
+        remoteSize = headResp.contentLength;
+      } catch (_) {}
+
+      final alreadyComplete =
+          tmpZipExists && remoteSize != null && startByte >= remoteSize;
+
+      if (!alreadyComplete) {
+        final req = http.Request('GET', Uri.parse(url));
+        if (startByte > 0) {
+          req.headers['Range'] = 'bytes=$startByte-';
+        }
+
+        var resp = await httpClient.send(req);
+
+        if (resp.statusCode == 416 && startByte > 0) {
+          await resp.stream.drain<void>();
+          await tmpZip.delete();
+          startByte = 0;
+          final retryReq = http.Request('GET', Uri.parse(url));
+          resp = await httpClient.send(retryReq);
+        }
+
+        if (resp.statusCode != 200 && resp.statusCode != 206) {
+          throw HttpException(
+              'Unexpected status ${resp.statusCode} for $url');
+        }
+
+        int totalBytes = 0;
+        final contentRange = resp.headers['content-range'];
+        if (resp.statusCode == 206 && contentRange != null) {
+          final slash = contentRange.lastIndexOf('/');
+          if (slash >= 0) {
+            totalBytes =
+                int.tryParse(contentRange.substring(slash + 1)) ?? 0;
+          }
+        } else {
+          totalBytes = resp.contentLength ?? 0;
+          if (startByte > 0 && resp.statusCode == 200) {
+            await tmpZip.writeAsBytes(const <int>[], flush: true);
+            startByte = 0;
           }
         }
-      } finally {
-        await inputStream.close();
+
+        final sink = tmpZip.openWrite(
+          mode: startByte > 0 ? FileMode.append : FileMode.write,
+        );
+
+        var received = startByte;
+        DateTime lastEmit = DateTime.fromMillisecondsSinceEpoch(0);
+        yield DownloadProgress(received, totalBytes);
+
+        await for (final chunk in resp.stream) {
+          sink.add(chunk);
+          received += chunk.length;
+          final now = DateTime.now();
+          if (now.difference(lastEmit).inMilliseconds >= 250) {
+            lastEmit = now;
+            yield DownloadProgress(received, totalBytes);
+          }
+        }
+        await sink.flush();
+        await sink.close();
+
+        yield DownloadProgress(
+            received, totalBytes == 0 ? received : totalBytes);
       }
+
+      // ---- Verify ----
+      yield const DownloadVerifying();
+      final zipSize = await tmpZip.length();
+      final expectedSize = remoteSize ?? 0;
+      if (expectedSize > 0 && zipSize != expectedSize) {
+        throw StateError(
+            'Downloaded zip size $zipSize != expected $expectedSize');
+      }
+
+      // ---- Extract in background isolate ----
+      yield const DownloadExtracting();
+      await tmpExtractDir.create(recursive: true);
+      await Isolate.run(() {
+        extractFileToDisk(tmpZip.path, tmpExtractDir.path);
+      });
 
       // ---- Atomic rename ----
       if (await targetDir.exists()) {
@@ -209,10 +231,18 @@ class ModelDownloader {
         await tmpZip.delete();
       }
 
+      // Exclude from iCloud backup on iOS/macOS.
+      try {
+        await Process.run('setxattr', [
+          '-w',
+          'com.apple.MobileBackup',
+          '1',
+          targetDir.path,
+        ]);
+      } catch (_) {}
+
       yield DownloadDone(targetDir.path);
     } catch (e) {
-      // Cleanup partial extract; keep the .tmp-*.zip around so a retry can
-      // resume via Range. (If the zip itself is corrupt, delete it too.)
       try {
         if (await tmpExtractDir.exists()) {
           await tmpExtractDir.delete(recursive: true);

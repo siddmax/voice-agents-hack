@@ -338,7 +338,6 @@ class CactusEngine {
     final convo = List<Map<String, dynamic>>.from(messages);
     String lastOutput = '';
     Object? lastErr;
-    CactusResponse? lastMeta;
 
     for (var attempt = 0; attempt <= retries; attempt++) {
       final meta = await completeRawWithMetadata(
@@ -351,7 +350,6 @@ class CactusEngine {
         onTokenCount: onTokenCount,
       );
       lastOutput = meta.rawText;
-      lastMeta = meta;
       final parsed = _tryParseJson(lastOutput);
       if (parsed != null) {
         final calls = parsed['function_calls'];
@@ -366,14 +364,14 @@ class CactusEngine {
                 call: call,
                 tools: tools,
                 query: query,
-              ), lastMeta!);
+              ), meta);
             }
-            return (call, lastMeta!);
+            return (call, meta);
           }
         }
         final inner = _tryParseJson((parsed['response'] as String?) ?? '');
-        if (inner != null) return (inner, lastMeta!);
-        return (parsed, lastMeta!);
+        if (inner != null) return (inner, meta);
+        return (parsed, meta);
       }
 
       if (looksLikeRefusal(lastOutput)) {
@@ -482,7 +480,7 @@ void _workerMain(_BootMsg boot) {
           msg.messagesJson,
           msg.optionsJson,
           msg.toolsJson,
-          tokens == null ? null : (_, __) => tokens.send(1),
+          tokens == null ? null : (_, _) => tokens.send(1),
           pcmData: msg.pcmData,
         );
         msg.reply.send(_CompleteOk(text));
