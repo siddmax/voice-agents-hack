@@ -106,6 +106,56 @@ class CactusEngine {
     }
   }
 
+  /// Returns the first parsed function call from cactus's response wrapper
+  /// in `{name, arguments}` shape, or null if the model produced text only.
+  ///
+  /// Cactus's response_buffer is always a wrapper:
+  ///   { "success": true, "response": "<text>",
+  ///     "function_calls": [{"name": "...", "arguments": {...}}, ...], ... }
+  /// Cactus already parses Gemma 4's `<|tool_call>call:NAME{KV}<tool_call|>`
+  /// DSL into that JSON shape internally. Reading `parsed['name']` at the
+  /// top level (the old code) always returned null because the call lives
+  /// nested inside `function_calls`.
+  Future<Map<String, dynamic>?> completeToolCall({
+    required List<Map<String, dynamic>> messages,
+    required List<Map<String, dynamic>> tools,
+    int maxTokens = 512,
+    double temperature = 0.2,
+    String? query,
+  }) async {
+    final raw = await completeText(
+      messages: messages,
+      tools: tools,
+      maxTokens: maxTokens,
+      temperature: temperature,
+    );
+    final wrapper = _tryParseJson(raw);
+    if (wrapper == null) {
+      if (looksLikeRefusal(raw)) {
+        throw JsonRetryExhausted(raw, 'model refused', 1);
+      }
+      return null;
+    }
+    final calls = wrapper['function_calls'];
+    if (calls is List && calls.isNotEmpty) {
+      final first = calls.first;
+      if (first is Map) {
+        final call = first.cast<String, dynamic>();
+        if (call['name'] is String && call['arguments'] is Map) {
+          return OutputProcessor.process(
+            call: call,
+            tools: tools,
+            query: query,
+          );
+        }
+      }
+    }
+    // No tool call — model returned text. Caller decides what to do.
+    return null;
+  }
+
+  /// Free-form JSON output (no tools forced). Used by the planner when we
+  /// want a plain `{todos: [...]}` shape rather than a tool call.
   Future<Map<String, dynamic>> completeJson({
     required List<Map<String, dynamic>> messages,
     List<Map<String, dynamic>>? tools,
@@ -128,15 +178,27 @@ class CactusEngine {
       );
       final parsed = _tryParseJson(lastOutput);
       if (parsed != null) {
-        if (tools != null &&
-            parsed['name'] is String &&
-            parsed['arguments'] is Map) {
-          return OutputProcessor.process(
-            call: parsed,
-            tools: tools,
-            query: query,
-          );
+        // Cactus wrapper unwrap: prefer the first function_call when present.
+        final calls = parsed['function_calls'];
+        if (calls is List && calls.isNotEmpty) {
+          final first = calls.first;
+          if (first is Map) {
+            final call = first.cast<String, dynamic>();
+            if (tools != null &&
+                call['name'] is String &&
+                call['arguments'] is Map) {
+              return OutputProcessor.process(
+                call: call,
+                tools: tools,
+                query: query,
+              );
+            }
+            return call;
+          }
         }
+        // No function_calls — try the response text as JSON (planner case).
+        final inner = _tryParseJson((parsed['response'] as String?) ?? '');
+        if (inner != null) return inner;
         return parsed;
       }
 

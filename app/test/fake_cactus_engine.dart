@@ -34,5 +34,17 @@ class FakeCactusEngine implements CactusEngine {
   }
 
   @override
+  Future<Map<String, dynamic>?> completeToolCall({
+    required List<Map<String, dynamic>> messages,
+    required List<Map<String, dynamic>> tools,
+    int maxTokens = 512,
+    double temperature = 0.2,
+    String? query,
+  }) async {
+    if (_i >= jsonResponses.length) return null;
+    return jsonResponses[_i++];
+  }
+
+  @override
   void close() {}
 }

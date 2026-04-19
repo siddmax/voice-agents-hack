@@ -331,23 +331,16 @@ class AgentLoop implements AgentService {
   }
 
   Future<Map<String, dynamic>?> _nextCall({String? reminder}) async {
-    final schema = {
-      'type': 'object',
-      'properties': {
-        'name': {'type': 'string'},
-        'arguments': {'type': 'object'},
-      },
-      'required': ['name', 'arguments'],
-    };
     final messages = assembler.build(history: _history, reminder: reminder);
     try {
-      final json = await engine.completeJson(
+      // Cactus parses Gemma 4's <|tool_call>...<tool_call|> DSL into a
+      // canonical {name, arguments} object inside the response wrapper —
+      // completeToolCall reaches in and returns it directly. This is the
+      // structured-output path; no JSON-shape coaxing of the model needed.
+      return await engine.completeToolCall(
         messages: messages,
         tools: tools.toSchemas(),
-        schema: schema,
-        retries: 2,
       );
-      return json;
     } catch (_) {
       return null;
     }

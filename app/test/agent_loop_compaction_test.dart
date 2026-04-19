@@ -48,6 +48,18 @@ class _ScriptedEngine implements CactusEngine {
   }
 
   @override
+  Future<Map<String, dynamic>?> completeToolCall({
+    required List<Map<String, dynamic>> messages,
+    required List<Map<String, dynamic>> tools,
+    int maxTokens = 512,
+    double temperature = 0.2,
+    String? query,
+  }) async {
+    if (_i >= jsonScript.length) return null;
+    return jsonScript[_i++];
+  }
+
+  @override
   void close() {}
 }
 
