@@ -26,7 +26,7 @@ class VoiceBugOverlay extends StatelessWidget {
       color: Colors.black.withValues(alpha: 0.85),
       child: switch (controller.state) {
         CaptureState.listening => _ListeningView(controller: controller),
-        CaptureState.analyzing => const _AnalyzingView(),
+        CaptureState.analyzing => _AnalyzingView(controller: controller),
         CaptureState.previewing => _PreviewView(controller: controller),
         CaptureState.submitting => const _SubmittingView(),
         CaptureState.done => _DoneView(controller: controller),
@@ -63,6 +63,20 @@ class _ListeningView extends StatelessWidget {
             'Tap to stop recording',
             style: TextStyle(color: Colors.white38, fontSize: 12),
           ),
+          if (controller.screenshotFailed) ...[
+            const SizedBox(height: 8),
+            const Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.info_outline, color: Colors.amber, size: 14),
+                SizedBox(width: 4),
+                Text(
+                  'Voice-only report (no screenshot captured)',
+                  style: TextStyle(color: Colors.amber, fontSize: 11),
+                ),
+              ],
+            ),
+          ],
           const SizedBox(height: 32),
           _ActionButton(
             label: 'Stop',
@@ -149,15 +163,16 @@ class _GlowingOrbState extends State<_GlowingOrb>
 }
 
 class _AnalyzingView extends StatelessWidget {
-  const _AnalyzingView();
+  final CaptureFlowController controller;
+  const _AnalyzingView({required this.controller});
 
   @override
   Widget build(BuildContext context) {
-    return const Center(
+    return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          SizedBox(
+          const SizedBox(
             width: 48,
             height: 48,
             child: CircularProgressIndicator(
@@ -165,13 +180,13 @@ class _AnalyzingView extends StatelessWidget {
               strokeWidth: 3,
             ),
           ),
-          SizedBox(height: 24),
-          Text(
+          const SizedBox(height: 24),
+          const Text(
             'Structuring your report...',
             style: TextStyle(color: Colors.white70, fontSize: 16),
           ),
-          SizedBox(height: 12),
-          Row(
+          const SizedBox(height: 12),
+          const Row(
             mainAxisSize: MainAxisSize.min,
             children: [
               Icon(Icons.lock, color: Colors.white38, size: 14),
@@ -182,25 +197,77 @@ class _AnalyzingView extends StatelessWidget {
               ),
             ],
           ),
+          const SizedBox(height: 24),
+          _ActionButton(
+            label: 'Cancel',
+            color: Colors.white24,
+            onTap: controller.cancel,
+          ),
         ],
       ),
     );
   }
 }
 
-class _PreviewView extends StatelessWidget {
+class _PreviewView extends StatefulWidget {
   final CaptureFlowController controller;
   const _PreviewView({required this.controller});
 
   @override
+  State<_PreviewView> createState() => _PreviewViewState();
+}
+
+class _PreviewViewState extends State<_PreviewView> {
+  late TextEditingController _titleCtrl;
+  late TextEditingController _descCtrl;
+  late TextEditingController _stepsCtrl;
+  late TextEditingController _expectedCtrl;
+  late TextEditingController _actualCtrl;
+  late String _severity;
+
+  @override
+  void initState() {
+    super.initState();
+    final r = widget.controller.report!;
+    _titleCtrl = TextEditingController(text: r.title);
+    _descCtrl = TextEditingController(text: r.description);
+    _stepsCtrl = TextEditingController(text: r.stepsContext);
+    _expectedCtrl = TextEditingController(text: r.expected);
+    _actualCtrl = TextEditingController(text: r.actual);
+    _severity = r.severity;
+  }
+
+  @override
+  void dispose() {
+    _titleCtrl.dispose();
+    _descCtrl.dispose();
+    _stepsCtrl.dispose();
+    _expectedCtrl.dispose();
+    _actualCtrl.dispose();
+    super.dispose();
+  }
+
+  void _syncToController() {
+    widget.controller.updateReport(
+      widget.controller.report!.copyWith(
+        title: _titleCtrl.text,
+        description: _descCtrl.text,
+        stepsContext: _stepsCtrl.text,
+        expected: _expectedCtrl.text,
+        actual: _actualCtrl.text,
+        severity: _severity,
+      ),
+    );
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final report = controller.report!;
-    final severityColor = _severityColor(report.severity);
+    final severityColor = _severityColor(_severity);
 
     return Center(
       child: Container(
-        width: 400,
-        constraints: const BoxConstraints(maxHeight: 600),
+        width: 420,
+        constraints: const BoxConstraints(maxHeight: 640),
         child: SingleChildScrollView(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -215,22 +282,21 @@ class _PreviewView extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      report.title,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
+                    _EditableField(label: 'TITLE', controller: _titleCtrl, maxLines: 1),
                     const SizedBox(height: 8),
-                    _SeverityBadge(severity: report.severity),
+                    _SeverityPicker(
+                      value: _severity,
+                      onChanged: (s) {
+                        setState(() => _severity = s);
+                        _syncToController();
+                      },
+                    ),
                     const SizedBox(height: 16),
-                    _FieldSection(label: 'Description', value: report.description),
-                    _FieldSection(label: 'Steps Context', value: report.stepsContext),
-                    _FieldSection(label: 'Expected', value: report.expected),
-                    _FieldSection(label: 'Actual', value: report.actual),
-                    if (controller.screenshotBytes != null) ...[
+                    _EditableField(label: 'DESCRIPTION', controller: _descCtrl),
+                    _EditableField(label: 'STEPS CONTEXT', controller: _stepsCtrl),
+                    _EditableField(label: 'EXPECTED', controller: _expectedCtrl),
+                    _EditableField(label: 'ACTUAL', controller: _actualCtrl),
+                    if (widget.controller.screenshotBytes != null) ...[
                       const Text(
                         'SCREENSHOT',
                         style: TextStyle(
@@ -243,16 +309,16 @@ class _PreviewView extends StatelessWidget {
                       ClipRRect(
                         borderRadius: BorderRadius.circular(8),
                         child: Image.memory(
-                          controller.screenshotBytes!,
+                          widget.controller.screenshotBytes!,
                           height: 120,
                           fit: BoxFit.cover,
                         ),
                       ),
                       const SizedBox(height: 12),
                     ],
-                    if (controller.metadata != null)
+                    if (widget.controller.metadata != null)
                       Text(
-                        '${controller.metadata!.device} · ${controller.metadata!.os}',
+                        '${widget.controller.metadata!.device} · ${widget.controller.metadata!.os}',
                         style: const TextStyle(color: Colors.white24, fontSize: 11),
                       ),
                   ],
@@ -265,7 +331,7 @@ class _PreviewView extends StatelessWidget {
                     child: _ActionButton(
                       label: 'Cancel',
                       color: Colors.white12,
-                      onTap: controller.cancel,
+                      onTap: widget.controller.cancel,
                     ),
                   ),
                   const SizedBox(width: 12),
@@ -273,7 +339,10 @@ class _PreviewView extends StatelessWidget {
                     child: _ActionButton(
                       label: 'Submit Report',
                       color: const Color(0xFF27ae60),
-                      onTap: controller.submit,
+                      onTap: () {
+                        _syncToController();
+                        widget.controller.submit();
+                      },
                     ),
                   ),
                 ],
@@ -282,6 +351,106 @@ class _PreviewView extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+class _EditableField extends StatelessWidget {
+  final String label;
+  final TextEditingController controller;
+  final int maxLines;
+
+  const _EditableField({
+    required this.label,
+    required this.controller,
+    this.maxLines = 3,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    if (controller.text.isEmpty || controller.text == 'Not available') {
+      return const SizedBox.shrink();
+    }
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            style: const TextStyle(
+              color: Colors.white38,
+              fontSize: 10,
+              letterSpacing: 1.5,
+            ),
+          ),
+          const SizedBox(height: 4),
+          TextField(
+            controller: controller,
+            maxLines: maxLines,
+            style: const TextStyle(color: Colors.white70, fontSize: 13, height: 1.4),
+            decoration: InputDecoration(
+              isDense: true,
+              contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+              filled: true,
+              fillColor: Colors.white.withValues(alpha: 0.05),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(6),
+                borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.1)),
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(6),
+                borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.1)),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(6),
+                borderSide: const BorderSide(color: Color(0xFF2D6A4F)),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SeverityPicker extends StatelessWidget {
+  final String value;
+  final ValueChanged<String> onChanged;
+  const _SeverityPicker({required this.value, required this.onChanged});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: ['critical', 'high', 'medium', 'low'].map((s) {
+        final selected = s == value;
+        return Padding(
+          padding: const EdgeInsets.only(right: 6),
+          child: GestureDetector(
+            onTap: () => onChanged(s),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                color: selected ? _severityColor(s) : Colors.white.withValues(alpha: 0.05),
+                borderRadius: BorderRadius.circular(4),
+                border: selected
+                    ? null
+                    : Border.all(color: Colors.white.withValues(alpha: 0.15)),
+              ),
+              child: Text(
+                s.toUpperCase(),
+                style: TextStyle(
+                  color: selected
+                      ? (s == 'medium' ? Colors.black87 : Colors.white)
+                      : Colors.white38,
+                  fontSize: 10,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ),
+        );
+      }).toList(),
     );
   }
 }
@@ -374,62 +543,6 @@ class _ErrorView extends StatelessWidget {
             onTap: controller.reset,
           ),
         ],
-      ),
-    );
-  }
-}
-
-class _FieldSection extends StatelessWidget {
-  final String label;
-  final String value;
-  const _FieldSection({required this.label, required this.value});
-
-  @override
-  Widget build(BuildContext context) {
-    if (value.isEmpty || value == 'Not available') return const SizedBox.shrink();
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            label.toUpperCase(),
-            style: const TextStyle(
-              color: Colors.white38,
-              fontSize: 10,
-              letterSpacing: 1.5,
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            value,
-            style: const TextStyle(color: Colors.white70, fontSize: 13, height: 1.4),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _SeverityBadge extends StatelessWidget {
-  final String severity;
-  const _SeverityBadge({required this.severity});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-      decoration: BoxDecoration(
-        color: _severityColor(severity),
-        borderRadius: BorderRadius.circular(4),
-      ),
-      child: Text(
-        severity.toUpperCase(),
-        style: TextStyle(
-          color: severity == 'medium' ? Colors.black87 : Colors.white,
-          fontSize: 10,
-          fontWeight: FontWeight.w600,
-        ),
       ),
     );
   }

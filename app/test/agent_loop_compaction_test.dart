@@ -38,6 +38,8 @@ class _ScriptedEngine implements CactusEngine {
     int maxTokens = 512,
     double temperature = 0.2,
     bool forceTools = false,
+    void Function(int)? onTokenCount,
+    Duration timeout = const Duration(minutes: 3),
   }) async => '{"success":true,"response":"","function_calls":[]}';
 
   @override
@@ -48,6 +50,7 @@ class _ScriptedEngine implements CactusEngine {
     double temperature = 0.2,
     String? query,
     bool forceTools = true,
+    void Function(int)? onTokenCount,
   }) async {
     if (_i >= jsonScript.length) return const [];
     return [jsonScript[_i++]];
@@ -62,6 +65,7 @@ class _ScriptedEngine implements CactusEngine {
     int maxTokens = 512,
     double temperature = 0.2,
     String? query,
+    void Function(int)? onTokenCount,
   }) async {
     if (_i >= jsonScript.length) {
       throw StateError('ran out of scripted JSON');

@@ -32,11 +32,14 @@ class AgentTodoUpdate extends AgentEvent {
 
 /// Emitted while the model is generating the next call. The UI renders this
 /// as a transient "thinking" indicator that disappears as soon as any other
-/// event arrives. Carries the active TODO content so the user can see what
-/// the agent is currently working on.
+/// event arrives. Carries the active TODO content plus generation progress
+/// (token count + elapsed time) so the user sees forward motion during the
+/// 10–30 s inference stalls on slow devices.
 class AgentThinking extends AgentEvent {
   final String? activeTodo;
-  const AgentThinking({this.activeTodo});
+  final int tokens;
+  final int elapsedMs;
+  const AgentThinking({this.activeTodo, this.tokens = 0, this.elapsedMs = 0});
 }
 
 class AgentFinished extends AgentEvent {

@@ -40,6 +40,12 @@ class CaptureFlowController extends ChangeNotifier {
   String _partialTranscript = '';
   String get partialTranscript => _partialTranscript;
 
+  String _transcript = '';
+  String get transcript => _transcript;
+
+  bool _screenshotFailed = false;
+  bool get screenshotFailed => _screenshotFailed;
+
   StreamSubscription<double>? _levelSub;
   double _soundLevel = 0.0;
   double get soundLevel => _soundLevel;
@@ -54,12 +60,17 @@ class CaptureFlowController extends ChangeNotifier {
   Future<void> startCapture(BuildContext context) async {
     if (_state != CaptureState.idle) return;
 
-    _state = CaptureState.listening;
     _report = null;
-    _screenshotBytes = null;
     _issueUrl = null;
     _errorMessage = null;
     _partialTranscript = '';
+    _transcript = '';
+    _screenshotFailed = false;
+
+    _screenshotBytes = await screenshot.capture();
+    _screenshotFailed = _screenshotBytes == null;
+
+    _state = CaptureState.listening;
     notifyListeners();
 
     _levelSub = stt.soundLevel.listen((level) {
@@ -75,6 +86,8 @@ class CaptureFlowController extends ChangeNotifier {
     );
 
     if (result != SttStartResult.started) {
+      _levelSub?.cancel();
+      _levelSub = null;
       _state = CaptureState.error;
       _errorMessage = result == SttStartResult.permissionDenied
           ? 'Microphone permission denied'
@@ -91,12 +104,12 @@ class CaptureFlowController extends ChangeNotifier {
   Future<void> stopAndAnalyze() async {
     if (_state != CaptureState.listening) return;
 
-    final transcript = await stt.stopListening();
+    _transcript = await stt.stopListening();
     _levelSub?.cancel();
     _levelSub = null;
     _soundLevel = 0.0;
 
-    if (transcript.trim().isEmpty) {
+    if (_transcript.trim().isEmpty) {
       _state = CaptureState.error;
       _errorMessage = 'No speech detected. Try again.';
       notifyListeners();
@@ -106,14 +119,22 @@ class CaptureFlowController extends ChangeNotifier {
     _state = CaptureState.analyzing;
     notifyListeners();
 
-    _screenshotBytes = await screenshot.capture();
-
-    _report = await analyzer.analyze(
-      transcript: transcript,
-      screenshotPng: _screenshotBytes,
-    );
+    _report = await analyzer
+        .analyze(
+          transcript: _transcript,
+          screenshotPng: _screenshotBytes,
+        )
+        .timeout(
+          const Duration(seconds: 30),
+          onTimeout: () => BugReport.fallback(_transcript),
+        );
 
     _state = CaptureState.previewing;
+    notifyListeners();
+  }
+
+  void updateReport(BugReport updated) {
+    _report = updated;
     notifyListeners();
   }
 
@@ -138,6 +159,7 @@ class CaptureFlowController extends ChangeNotifier {
         uiState: _report!.uiState,
         deviceTable: _metadata?.toMarkdownTable() ?? 'Not available',
         screenshotUrl: screenshotUrl,
+        rawTranscript: _transcript,
       );
 
       _issueUrl = await github.createIssue(
@@ -169,9 +191,17 @@ class CaptureFlowController extends ChangeNotifier {
     _issueUrl = null;
     _errorMessage = null;
     _partialTranscript = '';
+    _transcript = '';
     _soundLevel = 0.0;
+    _screenshotFailed = false;
     notifyListeners();
   }
 
   void reset() => cancel();
+
+  @override
+  void dispose() {
+    cancel();
+    super.dispose();
+  }
 }

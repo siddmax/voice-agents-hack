@@ -24,6 +24,8 @@ class FakeCactusEngine implements CactusEngine {
     int maxTokens = 512,
     double temperature = 0.2,
     bool forceTools = false,
+    void Function(int)? onTokenCount,
+    Duration timeout = const Duration(minutes: 3),
   }) async =>
       '{"success":true,"response":"","function_calls":[]}';
 
@@ -35,6 +37,7 @@ class FakeCactusEngine implements CactusEngine {
     double temperature = 0.2,
     String? query,
     bool forceTools = true,
+    void Function(int)? onTokenCount,
   }) async {
     if (_i >= jsonResponses.length) return const [];
     return [jsonResponses[_i++]];
@@ -49,6 +52,7 @@ class FakeCactusEngine implements CactusEngine {
     int maxTokens = 512,
     double temperature = 0.2,
     String? query,
+    void Function(int)? onTokenCount,
   }) async {
     if (_i >= jsonResponses.length) {
       throw StateError('FakeCactusEngine ran out of scripted responses');

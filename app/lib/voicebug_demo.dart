@@ -19,6 +19,7 @@ class VoiceBugDemo extends StatefulWidget {
 
 class _VoiceBugDemoState extends State<VoiceBugDemo> {
   late final CaptureFlowController _capture;
+  final _boundaryKey = GlobalKey();
 
   String get _ghOwner => dotenv.get('VOICEBUG_GH_OWNER', fallback: '');
   String get _ghRepo => dotenv.get('VOICEBUG_GH_REPO', fallback: '');
@@ -27,6 +28,7 @@ class _VoiceBugDemoState extends State<VoiceBugDemo> {
   @override
   void initState() {
     super.initState();
+    final screenshotCapture = ScreenshotCapture()..attach(_boundaryKey);
     _capture = CaptureFlowController(
       engine: widget.engine,
       stt: SpeechToTextService(),
@@ -35,7 +37,7 @@ class _VoiceBugDemoState extends State<VoiceBugDemo> {
         repo: _ghRepo,
         token: _ghToken,
       ),
-      screenshot: ScreenshotCapture(),
+      screenshot: screenshotCapture,
     );
   }
 
@@ -73,14 +75,15 @@ class _VoiceBugDemoState extends State<VoiceBugDemo> {
                 ),
               ),
             )
-          : _DemoShell(capture: _capture),
+          : _DemoShell(capture: _capture, boundaryKey: _boundaryKey),
     );
   }
 }
 
 class _DemoShell extends StatefulWidget {
   final CaptureFlowController capture;
-  const _DemoShell({required this.capture});
+  final GlobalKey boundaryKey;
+  const _DemoShell({required this.capture, required this.boundaryKey});
 
   @override
   State<_DemoShell> createState() => _DemoShellState();
@@ -93,21 +96,24 @@ class _DemoShellState extends State<_DemoShell> {
   Widget build(BuildContext context) {
     return Stack(
       children: [
-        Scaffold(
-          body: IndexedStack(
-            index: _selectedIndex,
-            children: const [
-              _ProductListPage(),
-              _CartPage(),
-            ],
-          ),
-          bottomNavigationBar: NavigationBar(
-            selectedIndex: _selectedIndex,
-            onDestinationSelected: (i) => setState(() => _selectedIndex = i),
-            destinations: const [
-              NavigationDestination(icon: Icon(Icons.storefront), label: 'Products'),
-              NavigationDestination(icon: Icon(Icons.shopping_cart), label: 'Cart'),
-            ],
+        RepaintBoundary(
+          key: widget.boundaryKey,
+          child: Scaffold(
+            body: IndexedStack(
+              index: _selectedIndex,
+              children: const [
+                _ProductListPage(),
+                _CartPage(),
+              ],
+            ),
+            bottomNavigationBar: NavigationBar(
+              selectedIndex: _selectedIndex,
+              onDestinationSelected: (i) => setState(() => _selectedIndex = i),
+              destinations: const [
+                NavigationDestination(icon: Icon(Icons.storefront), label: 'Products'),
+                NavigationDestination(icon: Icon(Icons.shopping_cart), label: 'Cart'),
+              ],
+            ),
           ),
         ),
         VoiceBugButton(
@@ -119,7 +125,6 @@ class _DemoShellState extends State<_DemoShell> {
   }
 }
 
-// Fake e-commerce product list
 class _ProductListPage extends StatelessWidget {
   const _ProductListPage();
 

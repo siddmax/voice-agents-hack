@@ -1,36 +1,24 @@
 import 'dart:typed_data';
+import 'dart:ui' as ui;
 
-import 'package:flutter/services.dart';
+import 'package:flutter/rendering.dart';
+import 'package:flutter/widgets.dart';
 
 class ScreenshotCapture {
-  static const _channel = MethodChannel('com.voicebug/screenshot');
+  GlobalKey? _boundaryKey;
 
-  Future<bool> checkPermission() async {
-    try {
-      final result = await _channel.invokeMethod<bool>('checkPermission');
-      return result ?? false;
-    } catch (_) {
-      return false;
-    }
-  }
-
-  Future<bool> requestPermission() async {
-    try {
-      final result = await _channel.invokeMethod<bool>('requestPermission');
-      return result ?? false;
-    } catch (_) {
-      return false;
-    }
-  }
-
-  Future<void> openSettings() async {
-    await _channel.invokeMethod<void>('openSettings');
-  }
+  void attach(GlobalKey key) => _boundaryKey = key;
 
   Future<Uint8List?> capture() async {
+    final key = _boundaryKey;
+    if (key == null) return null;
+    final boundary =
+        key.currentContext?.findRenderObject() as RenderRepaintBoundary?;
+    if (boundary == null) return null;
     try {
-      final result = await _channel.invokeMethod<Uint8List>('capture');
-      return result;
+      final image = await boundary.toImage(pixelRatio: 2.0);
+      final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+      return byteData?.buffer.asUint8List();
     } catch (_) {
       return null;
     }

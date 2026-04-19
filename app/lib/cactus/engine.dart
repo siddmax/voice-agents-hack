@@ -17,19 +17,36 @@ class JsonRetryExhausted implements Exception {
 
 String _truncate(String s, int n) => s.length <= n ? s : '${s.substring(0, n)}...';
 
-/// One-shot Isolate.run on every cactus_complete call broke after the first
-/// because cactus's per-thread state (set up by cactusInit) doesn't survive
-/// the worker isolate being spawned/torn-down per call. The fix is a
-/// long-lived worker isolate that owns the model handle and serves
-/// cactusInit + cactusComplete requests via SendPort.
+/// Long-lived worker isolate owns the cactus model handle; main isolate
+/// serializes requests to it over SendPort. Per-call Isolate.run used to
+/// fail after the first call because cactus's per-thread state (RNG,
+/// sampler, pthreads) doesn't survive an isolate tear-down.
 class CactusEngine {
   final SendPort _requests;
   final ReceivePort _exit;
   final Isolate _worker;
   bool _closed = false;
+  String? _closedReason;
   Future<void>? _pending;
+  // Pending per-call completers keyed by reply port hash — so if the
+  // worker dies we can fail each in-flight request with a real error
+  // instead of leaving the caller hanging forever.
+  final List<Completer<Object>> _pendingReplies = [];
 
-  CactusEngine._(this._requests, this._exit, this._worker);
+  CactusEngine._(this._requests, this._exit, this._worker) {
+    // If the worker exits unexpectedly, mark the engine dead and fail
+    // every pending request. Without this, _requests.send still succeeds
+    // (port still open) but no reply ever comes back.
+    _exit.listen((_) {
+      if (_closed) return;
+      _closed = true;
+      _closedReason ??= 'cactus worker isolate exited unexpectedly';
+      for (final c in _pendingReplies) {
+        if (!c.isCompleted) c.completeError(Exception(_closedReason!));
+      }
+      _pendingReplies.clear();
+    });
+  }
 
   static Future<CactusEngine> load(String modelPath) async {
     final ready = ReceivePort();
@@ -55,11 +72,6 @@ class CactusEngine {
     throw Exception('cactusInit returned unexpected message: $msg');
   }
 
-  /// Plain text the model produced (the `response` field of cactus's
-  /// wrapper, not the wrapper itself). Used by the compactor and any
-  /// caller that just wants natural language back. Tool calls live in
-  /// the wrapper's `function_calls` array — use [completeToolCall] or
-  /// [completeJson] for those.
   Future<String> completeText({
     required List<Map<String, dynamic>> messages,
     List<Map<String, dynamic>>? tools,
@@ -79,37 +91,48 @@ class CactusEngine {
     return raw;
   }
 
-  /// Returns cactus's raw response wrapper as a JSON string. Internal-ish:
-  /// completeJson and completeToolCall use this; external callers usually
-  /// want completeText / completeToolCall instead.
+  /// Raw cactus response wrapper JSON. [onTokenCount] fires on the main
+  /// isolate each time the worker emits a token — callers use it to drive
+  /// progress UI without trying to stream raw Gemma DSL tokens (which
+  /// would look like gibberish to the user).
   Future<String> completeRaw({
     required List<Map<String, dynamic>> messages,
     List<Map<String, dynamic>>? tools,
     int maxTokens = 512,
     double temperature = 0.2,
     bool forceTools = false,
+    void Function(int tokenCount)? onTokenCount,
+    Duration timeout = const Duration(minutes: 3),
   }) async {
     _checkOpen();
-    // Serialize requests — cactus is single-threaded for inference and the
-    // worker only handles one at a time.
     final prev = _pending;
     final completer = Completer<String>();
     _pending = completer.future;
     if (prev != null) {
-      try {
-        await prev;
-      } catch (_) {
-        // Swallow — caller of the prior request already saw the error.
-      }
+      try { await prev; } catch (_) {}
     }
+
+    final reply = ReceivePort();
+    ReceivePort? tokenPort;
+    if (onTokenCount != null) {
+      tokenPort = ReceivePort();
+      var count = 0;
+      tokenPort.listen((_) {
+        count += 1;
+        try { onTokenCount(count); } catch (_) {}
+      });
+    }
+
+    final replyCompleter = Completer<Object>();
+    _pendingReplies.add(replyCompleter);
+    reply.listen((msg) {
+      if (!replyCompleter.isCompleted) replyCompleter.complete(msg);
+    });
+
     try {
-      final reply = ReceivePort();
-      // force_tools is cactus's equivalent of Anthropic's tool_choice="any":
-      // when true, the constrainer biases the model to MUST emit a tool call
-      // (no text-only fallback). Verified active via cactus_complete.cpp's
-      // setup_tool_constraints(handle, tools, force_tools, temperature).
       _requests.send(_CompleteReq(
         reply: reply.sendPort,
+        tokens: tokenPort?.sendPort,
         messagesJson: jsonEncode(messages),
         optionsJson: jsonEncode({
           'temperature': temperature,
@@ -119,8 +142,11 @@ class CactusEngine {
         }),
         toolsJson: tools == null ? null : jsonEncode(tools),
       ));
-      final res = await reply.first;
-      reply.close();
+      final res = await replyCompleter.future.timeout(
+        timeout,
+        onTimeout: () =>
+            throw Exception('cactus_complete timed out after ${timeout.inSeconds}s'),
+      );
       if (res is _CompleteOk) {
         completer.complete(res.text);
         return res.text;
@@ -136,26 +162,16 @@ class CactusEngine {
     } catch (e) {
       if (!completer.isCompleted) completer.completeError(e);
       rethrow;
+    } finally {
+      _pendingReplies.remove(replyCompleter);
+      reply.close();
+      tokenPort?.close();
     }
   }
 
-  /// Returns the first parsed function call from cactus's response wrapper
-  /// in `{name, arguments}` shape, or null if the model produced text only.
-  ///
-  /// Cactus's response_buffer is always a wrapper:
-  ///   { "success": true, "response": "<text>",
-  ///     "function_calls": [{"name": "...", "arguments": {...}}, ...], ... }
-  /// Cactus already parses Gemma 4's `<|tool_call>call:NAME{KV}<tool_call|>`
-  /// DSL into that JSON shape internally. Reading `parsed['name']` at the
-  /// top level (the old code) always returned null because the call lives
-  /// nested inside `function_calls`.
   /// Returns ALL parsed function calls in cactus's response wrapper, in
   /// order, each in canonical {name, arguments} shape with OutputProcessor
   /// already applied. Empty list if the model produced text only.
-  ///
-  /// [forceTools] (default true) enables cactus's tool_choice="any"
-  /// equivalent — the constrainer biases the model to MUST emit a tool
-  /// call. Set false for the planner where text fallback is acceptable.
   Future<List<Map<String, dynamic>>> completeToolCalls({
     required List<Map<String, dynamic>> messages,
     required List<Map<String, dynamic>> tools,
@@ -163,6 +179,7 @@ class CactusEngine {
     double temperature = 0.2,
     String? query,
     bool forceTools = true,
+    void Function(int tokenCount)? onTokenCount,
   }) async {
     final raw = await completeRaw(
       messages: messages,
@@ -170,6 +187,7 @@ class CactusEngine {
       maxTokens: maxTokens,
       temperature: temperature,
       forceTools: forceTools,
+      onTokenCount: onTokenCount,
     );
     final wrapper = _tryParseJson(raw);
     if (wrapper == null) {
@@ -195,7 +213,6 @@ class CactusEngine {
     return out;
   }
 
-  /// Convenience: first call from completeToolCalls or null if empty.
   Future<Map<String, dynamic>?> completeToolCall({
     required List<Map<String, dynamic>> messages,
     required List<Map<String, dynamic>> tools,
@@ -215,8 +232,6 @@ class CactusEngine {
     return calls.isEmpty ? null : calls.first;
   }
 
-  /// Free-form JSON output (no tools forced). Used by the planner when we
-  /// want a plain `{todos: [...]}` shape rather than a tool call.
   Future<Map<String, dynamic>> completeJson({
     required List<Map<String, dynamic>> messages,
     List<Map<String, dynamic>>? tools,
@@ -225,6 +240,7 @@ class CactusEngine {
     int maxTokens = 512,
     double temperature = 0.2,
     String? query,
+    void Function(int tokenCount)? onTokenCount,
   }) async {
     final convo = List<Map<String, dynamic>>.from(messages);
     String lastOutput = '';
@@ -236,10 +252,10 @@ class CactusEngine {
         tools: tools,
         maxTokens: maxTokens,
         temperature: temperature,
+        onTokenCount: onTokenCount,
       );
       final parsed = _tryParseJson(lastOutput);
       if (parsed != null) {
-        // Cactus wrapper unwrap: prefer the first function_call when present.
         final calls = parsed['function_calls'];
         if (calls is List && calls.isNotEmpty) {
           final first = calls.first;
@@ -257,7 +273,6 @@ class CactusEngine {
             return call;
           }
         }
-        // No function_calls — try the response text as JSON (planner case).
         final inner = _tryParseJson((parsed['response'] as String?) ?? '');
         if (inner != null) return inner;
         return parsed;
@@ -286,12 +301,19 @@ class CactusEngine {
   void close() {
     if (_closed) return;
     _closed = true;
+    _closedReason ??= 'engine closed';
     _worker.kill(priority: Isolate.immediate);
     _exit.close();
+    for (final c in _pendingReplies) {
+      if (!c.isCompleted) c.completeError(Exception(_closedReason!));
+    }
+    _pendingReplies.clear();
   }
 
   void _checkOpen() {
-    if (_closed) throw StateError('CactusEngine is closed');
+    if (_closed) {
+      throw StateError(_closedReason ?? 'CactusEngine is closed');
+    }
   }
 }
 
@@ -317,11 +339,13 @@ class _LoadErr {
 
 class _CompleteReq {
   final SendPort reply;
+  final SendPort? tokens;
   final String messagesJson;
   final String optionsJson;
   final String? toolsJson;
   _CompleteReq({
     required this.reply,
+    required this.tokens,
     required this.messagesJson,
     required this.optionsJson,
     required this.toolsJson,
@@ -352,12 +376,13 @@ void _workerMain(_BootMsg boot) {
   requests.listen((msg) {
     if (msg is _CompleteReq) {
       try {
+        final tokens = msg.tokens;
         final text = cactusComplete(
           handle!,
           msg.messagesJson,
           msg.optionsJson,
           msg.toolsJson,
-          null,
+          tokens == null ? null : (_, __) => tokens.send(1),
         );
         msg.reply.send(_CompleteOk(text));
       } catch (e) {

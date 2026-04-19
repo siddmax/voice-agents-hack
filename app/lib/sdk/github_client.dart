@@ -8,6 +8,8 @@ class GitHubClient {
   final String repo;
   final String token;
 
+  static const _assetBranch = 'voicebug-assets';
+
   GitHubClient({
     required this.owner,
     required this.repo,
@@ -21,23 +23,81 @@ class GitHubClient {
 
   Future<String?> uploadScreenshot(Uint8List pngBytes) async {
     final timestamp = DateTime.now().millisecondsSinceEpoch;
-    final path = 'voicebug-screenshots/$timestamp.png';
+    final path = '$timestamp.png';
     final b64 = base64Encode(pngBytes);
 
-    final resp = await http.put(
-      Uri.parse('https://api.github.com/repos/$owner/$repo/contents/$path'),
-      headers: _headers,
-      body: jsonEncode({
-        'message': 'VoiceBug screenshot $timestamp',
-        'content': b64,
-      }),
-    );
+    var resp = await _putContent(path, b64, timestamp);
+
+    if (resp.statusCode == 404) {
+      final created = await _createAssetBranch();
+      if (!created) return null;
+      resp = await _putContent(path, b64, timestamp);
+    }
 
     if (resp.statusCode == 201 || resp.statusCode == 200) {
       final data = jsonDecode(resp.body);
       return data['content']?['download_url'] as String?;
     }
     return null;
+  }
+
+  Future<http.Response> _putContent(String path, String b64, int timestamp) {
+    return http.put(
+      Uri.parse('https://api.github.com/repos/$owner/$repo/contents/$path'),
+      headers: _headers,
+      body: jsonEncode({
+        'message': 'VoiceBug screenshot $timestamp',
+        'content': b64,
+        'branch': _assetBranch,
+      }),
+    );
+  }
+
+  Future<bool> _createAssetBranch() async {
+    final blobResp = await http.post(
+      Uri.parse('https://api.github.com/repos/$owner/$repo/git/blobs'),
+      headers: _headers,
+      body: jsonEncode({
+        'content': 'VoiceBug screenshot storage. Do not merge this branch.',
+        'encoding': 'utf-8',
+      }),
+    );
+    if (blobResp.statusCode != 201) return false;
+    final blobSha = jsonDecode(blobResp.body)['sha'] as String;
+
+    final treeResp = await http.post(
+      Uri.parse('https://api.github.com/repos/$owner/$repo/git/trees'),
+      headers: _headers,
+      body: jsonEncode({
+        'tree': [
+          {'path': 'README.md', 'mode': '100644', 'type': 'blob', 'sha': blobSha},
+        ],
+      }),
+    );
+    if (treeResp.statusCode != 201) return false;
+    final treeSha = jsonDecode(treeResp.body)['sha'] as String;
+
+    final commitResp = await http.post(
+      Uri.parse('https://api.github.com/repos/$owner/$repo/git/commits'),
+      headers: _headers,
+      body: jsonEncode({
+        'message': 'Initialize VoiceBug screenshot storage',
+        'tree': treeSha,
+        'parents': <String>[],
+      }),
+    );
+    if (commitResp.statusCode != 201) return false;
+    final commitSha = jsonDecode(commitResp.body)['sha'] as String;
+
+    final refResp = await http.post(
+      Uri.parse('https://api.github.com/repos/$owner/$repo/git/refs'),
+      headers: _headers,
+      body: jsonEncode({
+        'ref': 'refs/heads/$_assetBranch',
+        'sha': commitSha,
+      }),
+    );
+    return refResp.statusCode == 201;
   }
 
   Future<String?> createIssue({
@@ -71,10 +131,15 @@ class GitHubClient {
     required String uiState,
     required String deviceTable,
     String? screenshotUrl,
+    String? rawTranscript,
   }) {
     final screenshotSection = screenshotUrl != null
-        ? '**Screenshot:**\n![screenshot]($screenshotUrl)'
+        ? '![screenshot]($screenshotUrl)'
         : '*No screenshot captured*';
+
+    final transcriptSection = rawTranscript != null && rawTranscript.isNotEmpty
+        ? '\n<details>\n<summary>Raw voice transcript</summary>\n\n$rawTranscript\n\n</details>\n'
+        : '';
 
     return '''## Bug Report (VoiceBug — on-device AI)
 
@@ -100,8 +165,8 @@ $deviceTable
 
 **UI State (AI Analysis):**
 $uiState
-
+$transcriptSection
 ---
-*Report structured on-device by VoiceBug. No raw audio or unredacted data left the user\'s device.*''';
+*Report structured on-device by VoiceBug. Screenshot and structured text sent to GitHub. No raw audio stored.*''';
   }
 }

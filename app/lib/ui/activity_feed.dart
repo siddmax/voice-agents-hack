@@ -39,6 +39,8 @@ class _ActivityFeedState extends State<ActivityFeed> {
     final buf = StringBuffer();
     List<TodoItem>? latestTodos;
     String? thinkingHint;
+    int thinkingTokens = 0;
+    int thinkingElapsedMs = 0;
 
     void flushTokens() {
       if (buf.isEmpty) return;
@@ -77,9 +79,11 @@ class _ActivityFeedState extends State<ActivityFeed> {
         case AgentTodoUpdate(:final todos):
           thinkingHint = null;
           latestTodos = todos;
-        case AgentThinking(:final activeTodo):
+        case AgentThinking(:final activeTodo, :final tokens, :final elapsedMs):
           // Transient: only the latest one is shown, replaced by any later event.
           thinkingHint = activeTodo ?? 'thinking';
+          thinkingTokens = tokens;
+          thinkingElapsedMs = elapsedMs;
         case AgentFinished(:final summary):
           thinkingHint = null;
           flushTokens();
@@ -91,7 +95,13 @@ class _ActivityFeedState extends State<ActivityFeed> {
       }
     }
     flushTokens();
-    if (thinkingHint != null) rows.add(_ThinkingRow(thinkingHint));
+    if (thinkingHint != null) {
+      rows.add(_ThinkingRow(
+        hint: thinkingHint,
+        tokens: thinkingTokens,
+        elapsedMs: thinkingElapsedMs,
+      ));
+    }
 
     return [
       if (latestTodos != null && latestTodos.isNotEmpty)
@@ -343,7 +353,18 @@ class _ErrorRow extends _FeedRow {
 
 class _ThinkingRow extends _FeedRow {
   final String hint;
-  _ThinkingRow(this.hint);
+  final int tokens;
+  final int elapsedMs;
+  _ThinkingRow({required this.hint, this.tokens = 0, this.elapsedMs = 0});
+
+  String _label() {
+    final parts = <String>[];
+    if (hint != 'thinking') parts.add(hint);
+    if (elapsedMs > 0) parts.add('${(elapsedMs / 1000).toStringAsFixed(1)}s');
+    if (tokens > 0) parts.add('$tokens tok');
+    return parts.isEmpty ? 'thinking…' : 'thinking · ${parts.join(" · ")}';
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
@@ -361,7 +382,7 @@ class _ThinkingRow extends _FeedRow {
           ),
           const SizedBox(width: 10),
           Text(
-            hint == 'thinking' ? 'thinking…' : 'thinking · $hint',
+            _label(),
             style: TextStyle(
               color: scheme.outline,
               fontStyle: FontStyle.italic,

@@ -185,8 +185,8 @@ class AgentLoop implements AgentService {
       }
 
       await _maybeCompact();
-      yield AgentThinking(activeTodo: todos.active?.content);
-      final calls = await _nextCalls(reminder: reminder);
+      yield* _nextCallsWithHeartbeat(reminder: reminder);
+      final calls = _lastCalls;
       if (calls.isEmpty) {
         yield const AgentFinished('Model returned no tool call.');
         await _logSession(userInput, 'no tool call');
@@ -347,13 +347,28 @@ class AgentLoop implements AgentService {
       },
       'required': ['todos'],
     };
-    final messages = assembler.build(history: _history, reminder: 'plan phase: return write_todos args (a todos list) for this user request.');
+    final messages = assembler.build(
+      history: _history,
+      reminder:
+          'Plan phase: reply with a JSON object {"todos": [...]} listing '
+          'the 2-5 steps you will take. If the user asks for only one '
+          'concrete action, still return one todo so progress is visible.',
+    );
     try {
-      return await engine.completeJson(
+      final result = await engine.completeJson(
         messages: messages,
         schema: schema,
         retries: 2,
       );
+      // If the model emitted a write_todos tool call instead of bare JSON
+      // (common when the prompt lists tools), completeJson returns the
+      // whole {name, arguments} envelope. Unwrap so the executor sees
+      // just the args shape it expects ({todos: [...]}).
+      if (result['arguments'] is Map &&
+          result['name'] == 'write_todos') {
+        return (result['arguments'] as Map).cast<String, dynamic>();
+      }
+      return result;
     } catch (_) {
       return null;
     }
@@ -363,7 +378,10 @@ class AgentLoop implements AgentService {
   /// with a sharpening reminder if the first call comes back empty —
   /// gives the model a second chance with force_tools=true before the
   /// loop bails to AgentFinished.
-  Future<List<Map<String, dynamic>>> _nextCalls({String? reminder}) async {
+  Future<List<Map<String, dynamic>>> _nextCalls({
+    String? reminder,
+    void Function(int)? onTokenCount,
+  }) async {
     Future<List<Map<String, dynamic>>> attempt(String? r) async {
       final messages = assembler.build(history: _history, reminder: r);
       try {
@@ -371,6 +389,7 @@ class AgentLoop implements AgentService {
           messages: messages,
           tools: tools.toSchemas(),
           forceTools: true,
+          onTokenCount: onTokenCount,
         );
       } catch (_) {
         return const [];
@@ -391,6 +410,43 @@ class AgentLoop implements AgentService {
       '{"name": "<tool>", "arguments": {...}}.'
       '${reminder == null ? '' : ' $reminder'}',
     );
+  }
+
+  List<Map<String, dynamic>> _lastCalls = const [];
+
+  /// Yield a fresh AgentThinking heartbeat every ~500 ms while the model
+  /// is generating, annotated with token count + elapsed time. Stops as
+  /// soon as _nextCalls resolves; sets _lastCalls for the caller to read.
+  Stream<AgentEvent> _nextCallsWithHeartbeat({String? reminder}) async* {
+    final startedAt = DateTime.now();
+    var tokens = 0;
+    yield AgentThinking(activeTodo: todos.active?.content);
+
+    final callsFuture = _nextCalls(
+      reminder: reminder,
+      onTokenCount: (n) => tokens = n,
+    );
+
+    final done = Completer<void>();
+    callsFuture.whenComplete(() {
+      if (!done.isCompleted) done.complete();
+    });
+
+    while (!done.isCompleted) {
+      await Future.any([
+        done.future,
+        Future.delayed(const Duration(milliseconds: 500)),
+      ]);
+      if (done.isCompleted) break;
+      final elapsed = DateTime.now().difference(startedAt).inMilliseconds;
+      yield AgentThinking(
+        activeTodo: todos.active?.content,
+        tokens: tokens,
+        elapsedMs: elapsed,
+      );
+    }
+
+    _lastCalls = await callsFuture;
   }
 
   /// Pull (name, args) out of whatever shape the model emitted. Returns

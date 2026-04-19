@@ -1,5 +1,8 @@
-import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
+import 'dart:ui' as ui;
+
+import 'package:path_provider/path_provider.dart';
 
 import '../cactus/engine.dart';
 
@@ -48,6 +51,26 @@ class BugReport {
     );
   }
 
+  BugReport copyWith({
+    String? title,
+    String? description,
+    String? stepsContext,
+    String? expected,
+    String? actual,
+    String? severity,
+    String? uiState,
+  }) {
+    return BugReport(
+      title: title ?? this.title,
+      description: description ?? this.description,
+      stepsContext: stepsContext ?? this.stepsContext,
+      expected: expected ?? this.expected,
+      actual: actual ?? this.actual,
+      severity: severity != null ? _normalizeSeverity(severity) : this.severity,
+      uiState: uiState ?? this.uiState,
+    );
+  }
+
   static String _normalizeSeverity(String? raw) {
     final s = (raw ?? 'medium').toLowerCase().trim();
     if (const {'critical', 'high', 'medium', 'low'}.contains(s)) return s;
@@ -59,6 +82,9 @@ class ScreenAnalyzer {
   final CactusEngine engine;
 
   ScreenAnalyzer(this.engine);
+
+  static const _maxImageDimension = 1280;
+  static bool? _supportsVision;
 
   static const _schema = {
     'type': 'object',
@@ -78,28 +104,46 @@ class ScreenAnalyzer {
     required String transcript,
     Uint8List? screenshotPng,
   }) async {
-    final content = <Map<String, dynamic>>[];
+    final useImage = screenshotPng != null && _supportsVision != false;
+    String? tempPath;
 
-    if (screenshotPng != null) {
-      final b64 = base64Encode(screenshotPng);
-      content.add({
-        'type': 'image_url',
-        'image_url': {'url': 'data:image/png;base64,$b64'},
-      });
-    }
-
-    content.add({
-      'type': 'text',
-      'text': _buildPrompt(transcript),
-    });
-
-    final messages = [
-      {
-        'role': 'user',
-        'content': content,
+    try {
+      if (useImage) {
+        tempPath = await _writeToTempFile(screenshotPng!);
       }
-    ];
 
+      final message = <String, dynamic>{
+        'role': 'user',
+        'content': _buildPrompt(transcript),
+        if (tempPath != null) 'images': [tempPath],
+      };
+
+      final result = await engine.completeJson(
+        messages: [message],
+        schema: _schema,
+        retries: 2,
+        maxTokens: 1024,
+        temperature: 0.1,
+      );
+      if (useImage) _supportsVision = true;
+      return BugReport.fromJson(result);
+    } catch (e) {
+      if (useImage && _supportsVision == null) {
+        _supportsVision = false;
+        return _analyzeTextOnly(transcript);
+      }
+      return BugReport.fallback(transcript);
+    } finally {
+      if (tempPath != null) {
+        try { await File(tempPath).delete(); } catch (_) {}
+      }
+    }
+  }
+
+  Future<BugReport> _analyzeTextOnly(String transcript) async {
+    final messages = [
+      {'role': 'user', 'content': _buildPrompt(transcript)}
+    ];
     try {
       final result = await engine.completeJson(
         messages: messages,
@@ -109,11 +153,50 @@ class ScreenAnalyzer {
         temperature: 0.1,
       );
       return BugReport.fromJson(result);
-    } on JsonRetryExhausted {
-      return BugReport.fallback(transcript);
     } catch (_) {
       return BugReport.fallback(transcript);
     }
+  }
+
+  Future<String> _writeToTempFile(Uint8List pngBytes) async {
+    final resized = await _resizeIfNeeded(pngBytes);
+    final dir = await getTemporaryDirectory();
+    final file = File('${dir.path}/voicebug_${DateTime.now().millisecondsSinceEpoch}.png');
+    await file.writeAsBytes(resized);
+    return file.path;
+  }
+
+  static Future<Uint8List> _resizeIfNeeded(Uint8List pngBytes) async {
+    final codec = await ui.instantiateImageCodec(pngBytes);
+    final frame = await codec.getNextFrame();
+    final image = frame.image;
+
+    final w = image.width;
+    final h = image.height;
+
+    if (w <= _maxImageDimension && h <= _maxImageDimension) {
+      image.dispose();
+      return pngBytes;
+    }
+
+    final scale = _maxImageDimension / (w > h ? w : h);
+    final targetW = (w * scale).round();
+    final targetH = (h * scale).round();
+
+    final resizedCodec = await ui.instantiateImageCodec(
+      pngBytes,
+      targetWidth: targetW,
+      targetHeight: targetH,
+    );
+    final resizedFrame = await resizedCodec.getNextFrame();
+    final resizedImage = resizedFrame.image;
+
+    final byteData =
+        await resizedImage.toByteData(format: ui.ImageByteFormat.png);
+    resizedImage.dispose();
+    image.dispose();
+
+    return byteData!.buffer.asUint8List();
   }
 
   String _buildPrompt(String transcript) {
