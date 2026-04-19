@@ -18,6 +18,15 @@ class FakeCactusEngine implements CactusEngine {
       '';
 
   @override
+  Future<String> completeRaw({
+    required List<Map<String, dynamic>> messages,
+    List<Map<String, dynamic>>? tools,
+    int maxTokens = 512,
+    double temperature = 0.2,
+  }) async =>
+      '{"success":true,"response":"","function_calls":[]}';
+
+  @override
   Future<Map<String, dynamic>> completeJson({
     required List<Map<String, dynamic>> messages,
     List<Map<String, dynamic>>? tools,

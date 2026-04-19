@@ -55,7 +55,34 @@ class CactusEngine {
     throw Exception('cactusInit returned unexpected message: $msg');
   }
 
+  /// Plain text the model produced (the `response` field of cactus's
+  /// wrapper, not the wrapper itself). Used by the compactor and any
+  /// caller that just wants natural language back. Tool calls live in
+  /// the wrapper's `function_calls` array — use [completeToolCall] or
+  /// [completeJson] for those.
   Future<String> completeText({
+    required List<Map<String, dynamic>> messages,
+    List<Map<String, dynamic>>? tools,
+    int maxTokens = 512,
+    double temperature = 0.2,
+  }) async {
+    final raw = await completeRaw(
+      messages: messages,
+      tools: tools,
+      maxTokens: maxTokens,
+      temperature: temperature,
+    );
+    final wrapper = _tryParseJson(raw);
+    if (wrapper == null) return raw;
+    final response = wrapper['response'];
+    if (response is String) return response;
+    return raw;
+  }
+
+  /// Returns cactus's raw response wrapper as a JSON string. Internal-ish:
+  /// completeJson and completeToolCall use this; external callers usually
+  /// want completeText / completeToolCall instead.
+  Future<String> completeRaw({
     required List<Map<String, dynamic>> messages,
     List<Map<String, dynamic>>? tools,
     int maxTokens = 512,
@@ -123,7 +150,7 @@ class CactusEngine {
     double temperature = 0.2,
     String? query,
   }) async {
-    final raw = await completeText(
+    final raw = await completeRaw(
       messages: messages,
       tools: tools,
       maxTokens: maxTokens,
@@ -170,7 +197,7 @@ class CactusEngine {
     Object? lastErr;
 
     for (var attempt = 0; attempt <= retries; attempt++) {
-      lastOutput = await completeText(
+      lastOutput = await completeRaw(
         messages: convo,
         tools: tools,
         maxTokens: maxTokens,
