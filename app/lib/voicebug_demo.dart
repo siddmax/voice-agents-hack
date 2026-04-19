@@ -32,11 +32,7 @@ class _VoiceBugDemoState extends State<VoiceBugDemo> {
     _capture = CaptureFlowController(
       engine: widget.engine,
       stt: SpeechToTextService(),
-      github: GitHubClient(
-        owner: _ghOwner,
-        repo: _ghRepo,
-        token: _ghToken,
-      ),
+      github: GitHubClient(owner: _ghOwner, repo: _ghRepo, token: _ghToken),
       screenshot: screenshotCapture,
     );
   }
@@ -49,10 +45,11 @@ class _VoiceBugDemoState extends State<VoiceBugDemo> {
 
   @override
   Widget build(BuildContext context) {
-    final missingConfig = _ghOwner.isEmpty || _ghRepo.isEmpty || _ghToken.isEmpty;
+    final missingConfig =
+        _ghOwner.isEmpty || _ghRepo.isEmpty || _ghToken.isEmpty;
 
     return MaterialApp(
-      title: 'VoiceBug Demo',
+      title: 'Ticketmaster',
       theme: ThemeData.dark(useMaterial3: true).copyWith(
         colorScheme: ColorScheme.fromSeed(
           seedColor: const Color(0xFF2D6A4F),
@@ -101,24 +98,25 @@ class _DemoShellState extends State<_DemoShell> {
           child: Scaffold(
             body: IndexedStack(
               index: _selectedIndex,
-              children: const [
-                _ProductListPage(),
-                _CartPage(),
-              ],
+              children: const [_ProductListPage(), _CartPage()],
             ),
             bottomNavigationBar: NavigationBar(
               selectedIndex: _selectedIndex,
               onDestinationSelected: (i) => setState(() => _selectedIndex = i),
               destinations: const [
-                NavigationDestination(icon: Icon(Icons.storefront), label: 'Products'),
-                NavigationDestination(icon: Icon(Icons.shopping_cart), label: 'Cart'),
+                NavigationDestination(
+                  icon: Icon(Icons.confirmation_number_outlined),
+                  label: 'Events',
+                ),
+                NavigationDestination(
+                  icon: Icon(Icons.shopping_cart),
+                  label: 'Cart',
+                ),
               ],
             ),
           ),
         ),
-        VoiceBugButton(
-          onTap: () => widget.capture.startCapture(context),
-        ),
+        VoiceBugButton(onTap: () => widget.capture.startCapture(context)),
         VoiceBugOverlay(controller: widget.capture),
       ],
     );
@@ -129,20 +127,30 @@ class _ProductListPage extends StatelessWidget {
   const _ProductListPage();
 
   static const _products = [
-    _Product('Wireless Headphones', '\$79.99', 'Premium over-ear headphones with ANC'),
-    _Product('USB-C Hub', '\$49.99', '7-in-1 adapter for MacBook'),
-    _Product('Mechanical Keyboard', '\$129.99', 'Cherry MX Brown switches, wireless'),
-    _Product('Smart Watch', '\$199.99', 'Health tracking, GPS, 5-day battery'),
-    _Product('Portable Charger', '\$39.99', '20,000 mAh fast charging power bank'),
+    _Product(
+      'Warriors vs. Lakers',
+      '\$350',
+      'Chase Center · Lower Bowl seats available',
+    ),
+    _Product(
+      'SZA - Grand National Tour',
+      '\$189',
+      'Oracle Park · Verified resale and standard tickets',
+    ),
+    _Product('Billie Eilish', '\$142', 'SAP Center · Limited floor inventory'),
+    _Product('Sharks vs. Kraken', '\$96', 'SAP Center · Mid-level seating'),
+    _Product(
+      'Outside Lands 3-Day Pass',
+      '\$499',
+      'Golden Gate Park · Weekend GA passes',
+    ),
   ];
 
   @override
   Widget build(BuildContext context) {
     return CustomScrollView(
       slivers: [
-        const SliverAppBar.large(
-          title: Text('TechShop'),
-        ),
+        const SliverAppBar.large(title: Text('Ticketmaster')),
         SliverList.builder(
           itemCount: _products.length,
           itemBuilder: (context, i) {
@@ -155,13 +163,25 @@ class _ProductListPage extends StatelessWidget {
                   color: Colors.white10,
                   borderRadius: BorderRadius.circular(8),
                 ),
-                child: const Icon(Icons.devices, color: Colors.white24),
+                child: const Icon(
+                  Icons.confirmation_number_outlined,
+                  color: Colors.white24,
+                ),
               ),
               title: Text(p.name),
-              subtitle: Text(p.description, maxLines: 1, overflow: TextOverflow.ellipsis),
-              trailing: Text(p.price, style: const TextStyle(fontWeight: FontWeight.bold)),
+              subtitle: Text(
+                p.description,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              trailing: Text(
+                p.price,
+                style: const TextStyle(fontWeight: FontWeight.bold),
+              ),
               onTap: () => Navigator.of(context).push(
-                MaterialPageRoute(builder: (_) => _ProductDetailPage(product: p)),
+                MaterialPageRoute(
+                  builder: (_) => _ProductDetailPage(product: p),
+                ),
               ),
             );
           },
@@ -201,21 +221,30 @@ class _ProductDetailPage extends StatelessWidget {
               child: const Icon(Icons.image, size: 64, color: Colors.white12),
             ),
             const SizedBox(height: 24),
-            Text(product.name, style: Theme.of(context).textTheme.headlineMedium),
+            Text(
+              product.name,
+              style: Theme.of(context).textTheme.headlineMedium,
+            ),
             const SizedBox(height: 8),
-            Text(product.price, style: Theme.of(context).textTheme.titleLarge?.copyWith(
-              color: const Color(0xFF27ae60),
-              fontWeight: FontWeight.bold,
-            )),
+            Text(
+              product.price,
+              style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                color: const Color(0xFF2563EB),
+                fontWeight: FontWeight.bold,
+              ),
+            ),
             const SizedBox(height: 16),
-            Text(product.description, style: Theme.of(context).textTheme.bodyLarge),
+            Text(
+              product.description,
+              style: Theme.of(context).textTheme.bodyLarge,
+            ),
             const Spacer(),
             SizedBox(
               width: double.infinity,
               child: FilledButton.icon(
                 onPressed: () {},
-                icon: const Icon(Icons.add_shopping_cart),
-                label: const Text('Add to Cart'),
+                icon: const Icon(Icons.local_activity_outlined),
+                label: const Text('Find Tickets'),
               ),
             ),
           ],
@@ -236,7 +265,7 @@ class _CartPage extends StatelessWidget {
         children: [
           Icon(Icons.shopping_cart_outlined, size: 64, color: Colors.white24),
           SizedBox(height: 16),
-          Text('Your cart is empty', style: TextStyle(color: Colors.white54)),
+          Text('No tickets added yet', style: TextStyle(color: Colors.white54)),
         ],
       ),
     );

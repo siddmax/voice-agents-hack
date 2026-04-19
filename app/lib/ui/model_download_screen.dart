@@ -74,10 +74,13 @@ class _ModelDownloadScreenState extends State<ModelDownloadScreen> {
     final dl = widget.downloader ?? ModelDownloader();
     _sub = dl
         .download(tier: widget.tier, destination: widget.destination)
-        .listen(_onEvent, onError: (e) {
-      if (!mounted) return;
-      setState(() => _error = e.toString());
-    });
+        .listen(
+          _onEvent,
+          onError: (e) {
+            if (!mounted) return;
+            setState(() => _error = e.toString());
+          },
+        );
   }
 
   void _onEvent(DownloadEvent ev) {
@@ -181,13 +184,25 @@ class _ModelDownloadScreenState extends State<ModelDownloadScreen> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Text('Syndai',
-                style: theme.textTheme.headlineMedium
-                    ?.copyWith(fontWeight: FontWeight.w600)),
+            Image.asset(
+              'assets/branding/ticketmaster-logo.png',
+              height: 32,
+              fit: BoxFit.fitHeight,
+            ),
             const SizedBox(height: 8),
-            Text('Setting up Syndai',
-                style: theme.textTheme.bodyLarge
-                    ?.copyWith(color: theme.hintColor)),
+            Text(
+              'Setting up Ticketmaster',
+              style: theme.textTheme.bodyLarge?.copyWith(
+                color: theme.hintColor,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Loading the embedded Syndai agent',
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: theme.hintColor.withValues(alpha: 0.9),
+              ),
+            ),
             const SizedBox(height: 32),
             LinearProgressIndicator(value: fraction),
             const SizedBox(height: 16),
@@ -236,14 +251,15 @@ class _RetryState extends StatelessWidget {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(Icons.error_outline,
-              size: 64, color: theme.colorScheme.error),
+          Icon(Icons.error_outline, size: 64, color: theme.colorScheme.error),
           const SizedBox(height: 16),
           Text(title, style: theme.textTheme.titleLarge),
           const SizedBox(height: 8),
-          Text(message,
-              textAlign: TextAlign.center,
-              style: theme.textTheme.bodyMedium),
+          Text(
+            message,
+            textAlign: TextAlign.center,
+            style: theme.textTheme.bodyMedium,
+          ),
           const SizedBox(height: 24),
           FilledButton.icon(
             onPressed: onRetry,

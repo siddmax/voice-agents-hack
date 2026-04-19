@@ -63,13 +63,15 @@ Future<void> main() async {
   // The agent build (which calls cactusInit and memory-maps several GB
   // of weights) used to await here, blocking runApp and showing a frozen
   // white screen for the duration. We hand it off to the SyndaiApp state
-  // so the UI renders immediately with a "Warming up Syndai" indicator
+  // so the UI renders immediately with a Ticketmaster startup indicator
   // while the model loads in a background isolate.
-  runApp(SyndaiApp(
-    initialModelPath: resolvedPath,
-    tier: tier,
-    documentsDir: docsDir,
-  ));
+  runApp(
+    SyndaiApp(
+      initialModelPath: resolvedPath,
+      tier: tier,
+      documentsDir: docsDir,
+    ),
+  );
 }
 
 Future<AgentService?> _buildRealAgent(String modelPath) async {
@@ -90,15 +92,15 @@ Future<AgentService?> _buildRealAgent(String modelPath) async {
 String? _legacyOverridePath(ModelTier tier) {
   String? nonEmpty(String s) => s.isEmpty ? null : s;
 
-  final preferred =
-      tier == ModelTier.e4b ? nonEmpty(_e4bPath) : nonEmpty(_e2bPath);
+  final preferred = tier == ModelTier.e4b
+      ? nonEmpty(_e4bPath)
+      : nonEmpty(_e2bPath);
   if (preferred != null) return preferred;
 
   final legacy = nonEmpty(_legacyPath);
   if (legacy != null) return legacy;
 
-  final other =
-      tier == ModelTier.e4b ? nonEmpty(_e2bPath) : nonEmpty(_e4bPath);
+  final other = tier == ModelTier.e4b ? nonEmpty(_e2bPath) : nonEmpty(_e4bPath);
   return other;
 }
 
@@ -174,7 +176,9 @@ class _SyndaiAppState extends State<SyndaiApp> {
       // when the model path or agent readiness changes — so the JarvisScreen
       // gets a fresh ChatController bound to the real agent the moment
       // cactusInit returns.
-      key: ValueKey('app-${_modelPath ?? "none"}-${agentReady ? "real" : "warming"}'),
+      key: ValueKey(
+        'app-${_modelPath ?? "none"}-${agentReady ? "real" : "warming"}',
+      ),
       providers: [
         ChangeNotifierProvider(create: (_) => AppSettings()..load()),
         ChangeNotifierProvider(create: (_) => McpServerStore()..load()),
@@ -183,7 +187,7 @@ class _SyndaiAppState extends State<SyndaiApp> {
         ChangeNotifierProvider(create: (_) => ChatController(agentFactory())),
       ],
       child: MaterialApp(
-        title: 'Syndai',
+        title: 'Ticketmaster',
         theme: ThemeData(
           colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF2D6A4F)),
           useMaterial3: true,
@@ -197,21 +201,23 @@ class _SyndaiAppState extends State<SyndaiApp> {
         ),
         home: hasModel
             ? JarvisScreen(
-                startupError: _startupError ??
+                startupError:
+                    _startupError ??
                     (_loadingAgent
-                        ? 'Warming up Syndai — loading the model. First time can take ~30 s.'
+                        ? 'Starting Ticketmaster — loading the Syndai agent. First time can take ~30 s.'
                         : null),
               )
             : (widget.documentsDir != null
-                ? ModelDownloadScreen(
-                    tier: widget.tier,
-                    destination: widget.documentsDir!,
-                    onReady: _onModelReady,
-                  )
-                : JarvisScreen(
-                    startupError: _startupError ??
-                        'No model and no writable documents directory.',
-                  )),
+                  ? ModelDownloadScreen(
+                      tier: widget.tier,
+                      destination: widget.documentsDir!,
+                      onReady: _onModelReady,
+                    )
+                  : JarvisScreen(
+                      startupError:
+                          _startupError ??
+                          'No model and no writable documents directory.',
+                    )),
       ),
     );
   }

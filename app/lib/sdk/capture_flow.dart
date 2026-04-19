@@ -19,7 +19,7 @@ class CaptureFlowController extends ChangeNotifier {
   final GitHubClient github;
   final ScreenshotCapture screenshot;
   final ScreenAnalyzer analyzer;
-  final PcmRecorder _recorder;
+  final PcmCapture _recorder;
 
   CaptureState _state = CaptureState.idle;
   CaptureState get state => _state;
@@ -59,9 +59,9 @@ class CaptureFlowController extends ChangeNotifier {
     required this.stt,
     required this.github,
     required this.screenshot,
-    PcmRecorder? recorder,
-  })  : _recorder = recorder ?? PcmRecorder(),
-        analyzer = ScreenAnalyzer(engine);
+    PcmCapture? recorder,
+  })  : analyzer = ScreenAnalyzer(engine),
+        _recorder = recorder ?? PcmRecorder();
 
   Future<void> startCapture(BuildContext context) async {
     if (_state != CaptureState.idle) return;
@@ -72,11 +72,6 @@ class CaptureFlowController extends ChangeNotifier {
     _partialTranscript = '';
     _transcript = '';
     _screenshotFailed = false;
-
-    // Capture screen resolution before any async gap.
-    final mq = MediaQuery.of(context);
-    final size = mq.size * mq.devicePixelRatio;
-    final screenRes = '${size.width.toInt()}x${size.height.toInt()}';
 
     _screenshotBytes = await screenshot.capture();
     _screenshotFailed = _screenshotBytes == null;
@@ -112,7 +107,7 @@ class CaptureFlowController extends ChangeNotifier {
     }
 
     try {
-      _metadata = await DeviceMetadata.collectWithScreen(screenRes);
+      _metadata = await DeviceMetadata.collect(context);
     } catch (_) {}
   }
 

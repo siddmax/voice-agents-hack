@@ -12,29 +12,6 @@ import 'package:syndai/voice/stt.dart';
 
 import 'fake_cactus_engine.dart';
 
-class _FakePcmRecorder extends PcmRecorder {
-  @override
-  bool get isRecording => false;
-
-  @override
-  Future<bool> startRecording() async => true;
-
-  @override
-  Future<String?> stopRecording() async => null;
-
-  @override
-  Future<Uint8List?> stopAndGetPcm() async => null;
-
-  @override
-  Stream<double> get amplitude => const Stream.empty();
-
-  @override
-  Future<void> cancel() async {}
-
-  @override
-  void dispose() {}
-}
-
 class _FakeStt extends SpeechToTextService {
   SttStartResult nextResult = SttStartResult.started;
   String nextTranscript = 'button is broken';
@@ -86,15 +63,56 @@ class _FakeGitHub extends GitHubClient {
   }) async => nextIssueUrl;
 }
 
+class _FakeRecorder implements PcmCapture {
+  bool _recording = false;
+  Uint8List? nextPcm = Uint8List.fromList([1, 2, 3, 4]);
+
+  @override
+  Stream<double> get amplitude => const Stream.empty();
+
+  @override
+  bool get isRecording => _recording;
+
+  @override
+  Future<void> cancel() async {
+    _recording = false;
+  }
+
+  @override
+  void dispose() {
+    _recording = false;
+  }
+
+  @override
+  Future<bool> startRecording() async {
+    _recording = true;
+    return true;
+  }
+
+  @override
+  Future<Uint8List?> stopAndGetPcm() async {
+    _recording = false;
+    return nextPcm;
+  }
+
+  @override
+  Future<String?> stopRecording() async {
+    _recording = false;
+    return '/tmp/fake.wav';
+  }
+}
+
 void main() {
   late _FakeStt stt;
   late _FakeScreenshot screenshot;
   late _FakeGitHub github;
+  late _FakeRecorder recorder;
 
   setUp(() {
     stt = _FakeStt();
     screenshot = _FakeScreenshot();
     github = _FakeGitHub();
+    recorder = _FakeRecorder();
   });
 
   group('CaptureFlowController', () {
@@ -104,7 +122,7 @@ void main() {
         stt: stt,
         github: github,
         screenshot: screenshot,
-        recorder: _FakePcmRecorder(),
+        recorder: recorder,
       );
       expect(ctrl.state, CaptureState.idle);
     });
@@ -115,7 +133,7 @@ void main() {
         stt: stt,
         github: github,
         screenshot: screenshot,
-        recorder: _FakePcmRecorder(),
+        recorder: recorder,
       );
 
       ctrl.cancel();
@@ -137,7 +155,7 @@ void main() {
         stt: stt,
         github: github,
         screenshot: screenshot,
-        recorder: _FakePcmRecorder(),
+        recorder: recorder,
       );
 
       await tester.pumpWidget(Builder(builder: (context) {
@@ -158,7 +176,7 @@ void main() {
         stt: stt,
         github: github,
         screenshot: screenshot,
-        recorder: _FakePcmRecorder(),
+        recorder: recorder,
       );
 
       await tester.pumpWidget(Builder(builder: (context) {
@@ -178,7 +196,7 @@ void main() {
         stt: stt,
         github: github,
         screenshot: screenshot,
-        recorder: _FakePcmRecorder(),
+        recorder: recorder,
       );
 
       await tester.pumpWidget(Builder(builder: (context) {
@@ -198,7 +216,7 @@ void main() {
         stt: stt,
         github: github,
         screenshot: screenshot,
-        recorder: _FakePcmRecorder(),
+        recorder: recorder,
       );
 
       // Manually set state to listening to test stopAndAnalyze
@@ -215,7 +233,7 @@ void main() {
         stt: stt,
         github: github,
         screenshot: screenshot,
-        recorder: _FakePcmRecorder(),
+        recorder: recorder,
       );
 
       final report = BugReport.fallback('test');
@@ -229,7 +247,7 @@ void main() {
         stt: stt,
         github: github,
         screenshot: screenshot,
-        recorder: _FakePcmRecorder(),
+        recorder: recorder,
       );
 
       ctrl.dispose();
@@ -237,4 +255,3 @@ void main() {
     });
   });
 }
-

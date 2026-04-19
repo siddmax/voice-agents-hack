@@ -7,8 +7,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:syndai/agent/agent_service.dart';
 import 'package:syndai/main.dart';
+import 'package:syndai/ui/activity_feed.dart';
 import 'package:syndai/ui/chat_controller.dart';
-import 'package:syndai/ui/drop_guard_dashboard.dart';
 import 'package:syndai/ui/jarvis_screen.dart';
 
 class _FakeAgent implements AgentService {
@@ -32,15 +32,30 @@ void main() {
     SharedPreferences.setMockInitialValues({});
   });
 
-  testWidgets('JarvisScreen mounts with dashboard', (tester) async {
+  tearDown(() {
+    final binding = TestWidgetsFlutterBinding.ensureInitialized();
+    binding.platformDispatcher.views.first.resetPhysicalSize();
+    binding.platformDispatcher.views.first.resetDevicePixelRatio();
+  });
+
+  testWidgets('JarvisScreen mounts with seat list and activation bar', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1440, 2200);
+    tester.view.devicePixelRatio = 1.0;
     await tester.pumpWidget(SyndaiApp(agentFactory: fakeAgent));
     await tester.pump();
     expect(find.byType(JarvisScreen), findsOneWidget);
-    expect(find.byType(DropGuardDashboard), findsOneWidget);
+    expect(find.text('Golden State Warriors vs. LA Lakers'), findsOneWidget);
+    expect(find.text('Section 105, Row 10'), findsWidgets);
+    expect(find.text('Activate Drop-Guard'), findsOneWidget);
   });
 
-  testWidgets('sending renders tool-call chip and token from event stream',
-      (tester) async {
+  testWidgets('sending renders tool-call chip and token from event stream', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1440, 2200);
+    tester.view.devicePixelRatio = 1.0;
     await tester.pumpWidget(SyndaiApp(agentFactory: fakeAgent));
     await tester.pump();
 
@@ -54,14 +69,17 @@ void main() {
     }
 
     expect(find.textContaining('memory_view'), findsWidgets);
-    expect(find.textContaining('Done.'), findsOneWidget);
+    expect(find.textContaining('Done.'), findsWidgets);
+    expect(find.byType(ActivityFeed), findsOneWidget);
   });
 
   testWidgets('settings gear opens modal sheet', (tester) async {
+    tester.view.physicalSize = const Size(1440, 2200);
+    tester.view.devicePixelRatio = 1.0;
     await tester.pumpWidget(SyndaiApp(agentFactory: fakeAgent));
     await tester.pump();
 
-    await tester.tap(find.byIcon(Icons.settings_outlined));
+    await tester.tap(find.byIcon(Icons.favorite_border));
     for (var i = 0; i < 20; i++) {
       await tester.pump(const Duration(milliseconds: 20));
     }

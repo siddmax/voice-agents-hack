@@ -24,78 +24,110 @@ class MockAgentService implements AgentService {
     StreamController<AgentEvent> controller,
   ) async {
     try {
-      controller.add(const AgentThinking(activeTodo: 'capturing repro context'));
+      controller.add(
+        const AgentThinking(activeTodo: 'capturing repro context'),
+      );
       await _emitTokens(
-        'I heard a checkout failure in Section 102. '
-        'Drop-Guard is correlating your voice report with the live seat-lock path now.',
+        'I heard a checkout failure for Golden State Warriors seats in Section 105. '
+        'The Syndai agent is correlating your voice report with the live list-to-void loop now.',
         controller,
       );
 
       if (_cancelled) return;
-      controller.add(const AgentToolCall(
-        'prepare_bug_intake',
-        {'product_area': 'Checkout', 'surface': 'Seat map'},
-      ));
+      controller.add(
+        const AgentToolCall('prepare_bug_intake', {
+          'product_area': 'Ticketing',
+          'surface': 'Seat list',
+        }),
+      );
       await _wait(420);
-      controller.add(const AgentToolResult(
-        'prepare_bug_intake',
-        'Intent mapped to checkout hang in Section 102 with repeated Add to Cart attempts.',
-      ));
+      controller.add(
+        const AgentToolResult(
+          'prepare_bug_intake',
+          'Intent mapped to a checkout hang in Section 105 after repeated seat selection attempts.',
+        ),
+      );
 
-      controller.add(const AgentToolCall(
-        'start_repro_capture',
-        {'surface': 'seat_map', 'mode': 'screen+logs'},
-      ));
+      controller.add(
+        const AgentToolCall('capture_widget_state', {
+          'surface': 'seat_list',
+          'mode': 'screen+logs',
+        }),
+      );
       await _wait(380);
-      controller.add(const AgentToolResult(
-        'start_repro_capture',
-        'Screen recording, narration transcript, and session markers are live.',
-      ));
+      controller.add(
+        const AgentToolResult(
+          'capture_widget_state',
+          'Failure window captured with widget tree snapshot, narration transcript, and retry marker.',
+        ),
+      );
 
-      controller.add(const AgentToolCall(
-        'inspect_network_failures',
-        {'client': 'dio', 'focus': 'seat lock'},
-      ));
+      controller.add(
+        const AgentToolCall('analyze_network_logs', {
+          'client': 'dio',
+          'focus': 'seat selection timeout',
+        }),
+      );
       await _wait(640);
-      controller.add(const AgentToolResult(
-        'inspect_network_failures',
-        '[DioError] 409: Conflict - Seat_Lock_Timeout',
-      ));
+      controller.add(
+        const AgentToolResult(
+          'analyze_network_logs',
+          '{"error":"Timeout","code":"LIST_TO_VOID","seat":"Section 105 Row 10","retryable":true}',
+        ),
+      );
 
-      controller.add(const AgentToolCall(
-        'map_trace_location',
-        {'signal': 'Seat_Lock_Timeout'},
-      ));
+      controller.add(
+        const AgentToolCall('map_trace_location', {'signal': 'LIST_TO_VOID'}),
+      );
       await _wait(300);
-      controller.add(const AgentToolResult(
-        'map_trace_location',
-        'lib/logic/cart_provider.dart:88',
-      ));
+      controller.add(
+        const AgentToolResult(
+          'map_trace_location',
+          'lib/checkout/seat_list_controller.dart:118',
+        ),
+      );
 
-      controller.add(const AgentTodoUpdate([
-        TodoItem('t1', 'Correlate transcript with spinner evidence', TodoStatus.completed),
-        TodoItem('t2', 'Assemble GitHub-ready issue payload', TodoStatus.inProgress),
-        TodoItem('t3', 'Submit issue for engineering review', TodoStatus.pending),
-      ]));
+      controller.add(
+        const AgentTodoUpdate([
+          TodoItem(
+            't1',
+            'Correlate transcript with spinner evidence',
+            TodoStatus.completed,
+          ),
+          TodoItem(
+            't2',
+            'Assemble GitHub-ready issue payload',
+            TodoStatus.inProgress,
+          ),
+          TodoItem(
+            't3',
+            'Submit issue for engineering review',
+            TodoStatus.pending,
+          ),
+        ]),
+      );
 
-      controller.add(const AgentToolCall(
-        'generate_bug_report',
-        {'target': 'github_issue'},
-      ));
+      controller.add(
+        const AgentToolCall('generate_bug_report', {'target': 'github_issue'}),
+      );
       await _wait(520);
-      controller.add(const AgentToolResult(
-        'generate_bug_report',
-        'Structured report assembled with transcript, trace, repro steps, and 5-second spinner evidence.',
-      ));
+      controller.add(
+        const AgentToolResult(
+          'generate_bug_report',
+          'Structured report assembled with transcript, device info, timeout log, and widget-state evidence.',
+        ),
+      );
 
       await _emitTokens(
-        'The issue is isolated. I found a seat lock timeout and built the GitHub issue body for engineering. '
-        'Tap Submit to open the issue flow.',
+        'The issue is isolated. I found the ticket-selection timeout and assembled the GitHub issue package for engineering. '
+        'The Syndai agent is pushing it now.',
         controller,
       );
-      controller.add(const AgentFinished(
-        'The GitHub issue draft is ready with transcript, trace, and evidence.',
-      ));
+      controller.add(
+        const AgentFinished(
+          'The GitHub issue payload is ready with transcript, device info, timeout log, and evidence.',
+        ),
+      );
     } catch (e, st) {
       controller.addError(e, st);
     } finally {
@@ -110,22 +142,23 @@ class MockAgentService implements AgentService {
         'Submitting the repro package directly to GitHub Issues now.',
         controller,
       );
-      controller.add(const AgentToolCall(
-        'create_github_issue',
-        {'repo': 'demo/reliability-lab', 'labels': ['bug', 'demo', 'seat-lock']},
-      ));
+      controller.add(
+        const AgentToolCall('create_github_issue', {
+          'repo': 'demo/reliability-lab',
+          'labels': ['bug', 'demo', 'warriors-checkout'],
+        }),
+      );
       await _wait(600);
-      controller.add(const AgentToolResult(
-        'create_github_issue',
-        '#142',
-      ));
+      controller.add(const AgentToolResult('create_github_issue', '#GSU-882'));
       await _emitTokens(
-        'Bug report submitted successfully. Sent to GitHub Issues as number 142.',
+        'Issue pushed to engineering successfully. The queue reservation is active and the GitHub issue is live as GSU-882.',
         controller,
       );
-      controller.add(const AgentFinished(
-        'Bug report submitted successfully. Sent to GitHub Issues as #142.',
-      ));
+      controller.add(
+        const AgentFinished(
+          'Issue pushed to engineering successfully as #GSU-882.',
+        ),
+      );
     } catch (e, st) {
       controller.addError(e, st);
     } finally {

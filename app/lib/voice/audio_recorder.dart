@@ -5,9 +5,18 @@ import 'dart:typed_data';
 import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
 
-class PcmRecorder {
-  AudioRecorder? _recorderInstance;
-  AudioRecorder get _recorder => _recorderInstance ??= AudioRecorder();
+abstract class PcmCapture {
+  bool get isRecording;
+  Stream<double> get amplitude;
+  Future<bool> startRecording();
+  Future<String?> stopRecording();
+  Future<Uint8List?> stopAndGetPcm();
+  Future<void> cancel();
+  void dispose();
+}
+
+class PcmRecorder implements PcmCapture {
+  final AudioRecorder _recorder = AudioRecorder();
   String? _path;
   bool _recording = false;
   Timer? _maxTimer;
@@ -22,6 +31,7 @@ class PcmRecorder {
 
   bool get isRecording => _recording;
 
+  @override
   Future<bool> startRecording() async {
     if (_recording) return true;
     if (!await _recorder.hasPermission()) return false;
@@ -39,6 +49,7 @@ class PcmRecorder {
     return true;
   }
 
+  @override
   Future<String?> stopRecording() async {
     _maxTimer?.cancel();
     _maxTimer = null;
@@ -48,6 +59,7 @@ class PcmRecorder {
     return _path;
   }
 
+  @override
   Future<Uint8List?> stopAndGetPcm() async {
     final path = await stopRecording();
     if (path == null) return null;
@@ -59,10 +71,12 @@ class PcmRecorder {
     return Uint8List.sublistView(bytes, 44);
   }
 
+  @override
   Stream<double> get amplitude => _recorder
       .onAmplitudeChanged(const Duration(milliseconds: 100))
       .map((a) => ((a.current + 50) / 50).clamp(0.0, 1.0));
 
+  @override
   Future<void> cancel() async {
     _maxTimer?.cancel();
     _maxTimer = null;
@@ -78,8 +92,9 @@ class PcmRecorder {
     }
   }
 
+  @override
   void dispose() {
     cancel();
-    _recorderInstance?.dispose();
+    _recorder.dispose();
   }
 }

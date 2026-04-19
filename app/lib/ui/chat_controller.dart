@@ -43,6 +43,12 @@ class ChatController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Injects a greeting as an agent token so it shows in the activity feed.
+  void greet(String text) {
+    events.add(AgentToken(text));
+    notifyListeners();
+  }
+
   StreamSubscription<AgentEvent>? _sub;
   bool _running = false;
   String? _lastFinishedSummary;

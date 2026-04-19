@@ -29,12 +29,12 @@
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Syndai needs the microphone to hear you when you talk to it.</string>
+	<string>Ticketmaster uses the microphone so you can talk to the embedded Syndai agent.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>Syndai transcribes your speech on-device to answer you.</string>
+	<string>Ticketmaster transcribes your speech on-device for the embedded Syndai agent.</string>
 	<key>NSCalendarsUsageDescription</key>
-	<string>Syndai adds events to your calendar when you ask.</string>
+	<string>Ticketmaster adds events to your calendar when you ask the embedded Syndai agent.</string>
 	<key>NSContactsUsageDescription</key>
-	<string>Syndai looks up contacts so it can text or call the right person.</string>
+	<string>Ticketmaster looks up contacts so the embedded Syndai agent can text or call the right person.</string>
 </dict>
 </plist>

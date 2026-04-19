@@ -9,6 +9,7 @@ class MainFlutterWindow: NSWindow {
     self.setFrame(windowFrame, display: true)
 
     RegisterGeneratedPlugins(registry: flutterViewController)
+    ScreenshotPlugin.register(with: flutterViewController.registrar(forPlugin: "ScreenshotPlugin"))
 
     super.awakeFromNib()
   }
