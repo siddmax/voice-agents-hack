@@ -47,6 +47,7 @@ dependencies:
   flutter_dotenv: ^5.2.1
   http: ^1.2.0
   archive: ^3.6.1
+  background_downloader: ^9.4.4
   record: ^6.2.0
 
 dev_dependencies:

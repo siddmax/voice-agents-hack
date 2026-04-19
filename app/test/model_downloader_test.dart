@@ -214,6 +214,16 @@ void main() {
       );
 
       await File('${target.path}/config.txt').writeAsString('x');
+      // config.txt alone is not enough — need at least one .weights file
+      expect(
+        await ModelDownloader.existingModelPath(
+          tier: ModelTier.e2b,
+          destination: dir,
+        ),
+        isNull,
+      );
+
+      await File('${target.path}/dummy.weights').writeAsBytes([1, 2, 3]);
       expect(
         await ModelDownloader.existingModelPath(
           tier: ModelTier.e2b,
@@ -232,6 +242,7 @@ void main() {
           '${dir.path}/${ModelDownloader.dirNameForTier(ModelTier.e4b)}');
       await target.create(recursive: true);
       await File('${target.path}/config.txt').writeAsString('x');
+      await File('${target.path}/dummy.weights').writeAsBytes([1, 2, 3]);
 
       var called = 0;
       final client = _FakeClient((req) async {

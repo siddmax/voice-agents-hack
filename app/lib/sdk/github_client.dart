@@ -105,8 +105,9 @@ class GitHubClient {
     required String body,
     required List<String> labels,
   }) async {
-    final resp = await http.post(
-      Uri.parse('https://api.github.com/repos/$owner/$repo/issues'),
+    final url = Uri.parse('https://api.github.com/repos/$owner/$repo/issues');
+    var resp = await http.post(
+      url,
       headers: _headers,
       body: jsonEncode({
         'title': title,
@@ -114,6 +115,17 @@ class GitHubClient {
         'labels': labels,
       }),
     );
+
+    if (resp.statusCode == 403) {
+      resp = await http.post(
+        url,
+        headers: _headers,
+        body: jsonEncode({
+          'title': title,
+          'body': body,
+        }),
+      );
+    }
 
     if (resp.statusCode == 201) {
       final data = jsonDecode(resp.body);
