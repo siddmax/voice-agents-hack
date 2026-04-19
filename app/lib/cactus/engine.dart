@@ -1,9 +1,45 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:isolate';
+import 'dart:typed_data';
 
 import '../agent/output_processor.dart';
 import 'cactus.dart';
+
+class CactusResponse {
+  final String rawText;
+  final double? confidence;
+  final bool cloudHandoff;
+  final String? thinking;
+  final double? timeToFirstTokenMs;
+  final double? decodeTps;
+  final double? ramUsageMb;
+
+  CactusResponse({
+    required this.rawText,
+    this.confidence,
+    this.cloudHandoff = false,
+    this.thinking,
+    this.timeToFirstTokenMs,
+    this.decodeTps,
+    this.ramUsageMb,
+  });
+
+  factory CactusResponse.fromRaw(String raw) {
+    final parsed = extractJsonObject(raw);
+    if (parsed == null) return CactusResponse(rawText: raw);
+    return CactusResponse(
+      rawText: raw,
+      confidence: (parsed['confidence'] as num?)?.toDouble(),
+      cloudHandoff: parsed['cloud_handoff'] == true,
+      thinking: parsed['thinking'] as String?,
+      timeToFirstTokenMs:
+          (parsed['time_to_first_token_ms'] as num?)?.toDouble(),
+      decodeTps: (parsed['decode_tps'] as num?)?.toDouble(),
+      ramUsageMb: (parsed['ram_usage_mb'] as num?)?.toDouble(),
+    );
+  }
+}
 
 class JsonRetryExhausted implements Exception {
   final String lastOutput;
@@ -101,6 +137,33 @@ class CactusEngine {
     int maxTokens = 512,
     double temperature = 0.2,
     bool forceTools = false,
+    bool enableThinking = false,
+    Uint8List? pcmData,
+    void Function(int tokenCount)? onTokenCount,
+    Duration timeout = const Duration(minutes: 3),
+  }) async {
+    final result = await completeRawWithMetadata(
+      messages: messages,
+      tools: tools,
+      maxTokens: maxTokens,
+      temperature: temperature,
+      forceTools: forceTools,
+      enableThinking: enableThinking,
+      pcmData: pcmData,
+      onTokenCount: onTokenCount,
+      timeout: timeout,
+    );
+    return result.rawText;
+  }
+
+  Future<CactusResponse> completeRawWithMetadata({
+    required List<Map<String, dynamic>> messages,
+    List<Map<String, dynamic>>? tools,
+    int maxTokens = 512,
+    double temperature = 0.2,
+    bool forceTools = false,
+    bool enableThinking = false,
+    Uint8List? pcmData,
     void Function(int tokenCount)? onTokenCount,
     Duration timeout = const Duration(minutes: 3),
   }) async {
@@ -139,8 +202,10 @@ class CactusEngine {
           'max_tokens': maxTokens,
           'top_p': 0.95,
           if (forceTools) 'force_tools': true,
+          if (enableThinking) 'enable_thinking_if_supported': true,
         }),
         toolsJson: tools == null ? null : jsonEncode(tools),
+        pcmData: pcmData,
       ));
       final res = await replyCompleter.future.timeout(
         timeout,
@@ -149,7 +214,7 @@ class CactusEngine {
       );
       if (res is _CompleteOk) {
         completer.complete(res.text);
-        return res.text;
+        return CactusResponse.fromRaw(res.text);
       } else if (res is _CompleteErr) {
         final err = Exception('cactus_complete failed: ${res.error}');
         completer.completeError(err);
@@ -240,20 +305,53 @@ class CactusEngine {
     int maxTokens = 512,
     double temperature = 0.2,
     String? query,
+    bool enableThinking = false,
+    Uint8List? pcmData,
+    void Function(int tokenCount)? onTokenCount,
+  }) async {
+    return (await completeJsonWithMetadata(
+      messages: messages,
+      tools: tools,
+      schema: schema,
+      retries: retries,
+      maxTokens: maxTokens,
+      temperature: temperature,
+      query: query,
+      enableThinking: enableThinking,
+      pcmData: pcmData,
+      onTokenCount: onTokenCount,
+    )).$1;
+  }
+
+  Future<(Map<String, dynamic>, CactusResponse)> completeJsonWithMetadata({
+    required List<Map<String, dynamic>> messages,
+    List<Map<String, dynamic>>? tools,
+    required Map<String, dynamic> schema,
+    int retries = 3,
+    int maxTokens = 512,
+    double temperature = 0.2,
+    String? query,
+    bool enableThinking = false,
+    Uint8List? pcmData,
     void Function(int tokenCount)? onTokenCount,
   }) async {
     final convo = List<Map<String, dynamic>>.from(messages);
     String lastOutput = '';
     Object? lastErr;
+    CactusResponse? lastMeta;
 
     for (var attempt = 0; attempt <= retries; attempt++) {
-      lastOutput = await completeRaw(
+      final meta = await completeRawWithMetadata(
         messages: convo,
         tools: tools,
         maxTokens: maxTokens,
         temperature: temperature,
+        enableThinking: enableThinking,
+        pcmData: attempt == 0 ? pcmData : null,
         onTokenCount: onTokenCount,
       );
+      lastOutput = meta.rawText;
+      lastMeta = meta;
       final parsed = _tryParseJson(lastOutput);
       if (parsed != null) {
         final calls = parsed['function_calls'];
@@ -264,18 +362,18 @@ class CactusEngine {
             if (tools != null &&
                 call['name'] is String &&
                 call['arguments'] is Map) {
-              return OutputProcessor.process(
+              return (OutputProcessor.process(
                 call: call,
                 tools: tools,
                 query: query,
-              );
+              ), lastMeta!);
             }
-            return call;
+            return (call, lastMeta!);
           }
         }
         final inner = _tryParseJson((parsed['response'] as String?) ?? '');
-        if (inner != null) return inner;
-        return parsed;
+        if (inner != null) return (inner, lastMeta!);
+        return (parsed, lastMeta!);
       }
 
       if (looksLikeRefusal(lastOutput)) {
@@ -343,12 +441,14 @@ class _CompleteReq {
   final String messagesJson;
   final String optionsJson;
   final String? toolsJson;
+  final Uint8List? pcmData;
   _CompleteReq({
     required this.reply,
     required this.tokens,
     required this.messagesJson,
     required this.optionsJson,
     required this.toolsJson,
+    this.pcmData,
   });
 }
 
@@ -383,6 +483,7 @@ void _workerMain(_BootMsg boot) {
           msg.optionsJson,
           msg.toolsJson,
           tokens == null ? null : (_, __) => tokens.send(1),
+          pcmData: msg.pcmData,
         );
         msg.reply.send(_CompleteOk(text));
       } catch (e) {

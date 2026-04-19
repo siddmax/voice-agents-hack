@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:flutter/widgets.dart';
 
 import '../cactus/engine.dart';
+import '../voice/audio_recorder.dart';
 import '../voice/stt.dart';
 import 'device_metadata.dart';
 import 'github_client.dart';
@@ -18,6 +19,7 @@ class CaptureFlowController extends ChangeNotifier {
   final GitHubClient github;
   final ScreenshotCapture screenshot;
   final ScreenAnalyzer analyzer;
+  final PcmRecorder _recorder = PcmRecorder();
 
   CaptureState _state = CaptureState.idle;
   CaptureState get state => _state;
@@ -27,6 +29,8 @@ class CaptureFlowController extends ChangeNotifier {
 
   Uint8List? _screenshotBytes;
   Uint8List? get screenshotBytes => _screenshotBytes;
+
+  Uint8List? _pcmData;
 
   DeviceMetadata? _metadata;
   DeviceMetadata? get metadata => _metadata;
@@ -71,7 +75,11 @@ class CaptureFlowController extends ChangeNotifier {
     _screenshotFailed = _screenshotBytes == null;
 
     _state = CaptureState.listening;
+    _pcmData = null;
     notifyListeners();
+
+    // Start PCM recording in parallel (best-effort, don't block STT)
+    unawaited(_recorder.startRecording().catchError((_) => false));
 
     _levelSub = stt.soundLevel.listen((level) {
       _soundLevel = level;
@@ -104,7 +112,12 @@ class CaptureFlowController extends ChangeNotifier {
   Future<void> stopAndAnalyze() async {
     if (_state != CaptureState.listening) return;
 
-    _transcript = await stt.stopListening();
+    final results = await Future.wait([
+      stt.stopListening(),
+      _recorder.stopAndGetPcm().catchError((_) => null),
+    ]);
+    _transcript = results[0] as String;
+    _pcmData = results[1] as Uint8List?;
     _levelSub?.cancel();
     _levelSub = null;
     _soundLevel = 0.0;
@@ -123,6 +136,7 @@ class CaptureFlowController extends ChangeNotifier {
         .analyze(
           transcript: _transcript,
           screenshotPng: _screenshotBytes,
+          pcmData: _pcmData,
         )
         .timeout(
           const Duration(seconds: 30),
@@ -185,9 +199,11 @@ class CaptureFlowController extends ChangeNotifier {
     _levelSub?.cancel();
     _levelSub = null;
     if (stt.isListening) stt.cancel();
+    _recorder.cancel();
     _state = CaptureState.idle;
     _report = null;
     _screenshotBytes = null;
+    _pcmData = null;
     _issueUrl = null;
     _errorMessage = null;
     _partialTranscript = '';
@@ -202,6 +218,7 @@ class CaptureFlowController extends ChangeNotifier {
   @override
   void dispose() {
     cancel();
+    _recorder.dispose();
     super.dispose();
   }
 }

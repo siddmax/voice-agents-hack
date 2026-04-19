@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:syndai/agent/compaction.dart';
 import 'package:syndai/cactus/engine.dart';
@@ -36,9 +38,26 @@ class _ScriptedEngine implements CactusEngine {
     int maxTokens = 512,
     double temperature = 0.2,
     bool forceTools = false,
+    bool enableThinking = false,
+    Uint8List? pcmData,
     void Function(int)? onTokenCount,
     Duration timeout = const Duration(minutes: 3),
   }) async => '{"success":true,"response":"","function_calls":[]}';
+
+  @override
+  Future<CactusResponse> completeRawWithMetadata({
+    required List<Map<String, dynamic>> messages,
+    List<Map<String, dynamic>>? tools,
+    int maxTokens = 512,
+    double temperature = 0.2,
+    bool forceTools = false,
+    bool enableThinking = false,
+    Uint8List? pcmData,
+    void Function(int)? onTokenCount,
+    Duration timeout = const Duration(minutes: 3),
+  }) async => CactusResponse(
+        rawText: '{"success":true,"response":"","function_calls":[]}',
+      );
 
   @override
   Future<Map<String, dynamic>?> completeToolCall({
@@ -70,9 +89,26 @@ class _ScriptedEngine implements CactusEngine {
     int maxTokens = 512,
     double temperature = 0.2,
     String? query,
+    bool enableThinking = false,
+    Uint8List? pcmData,
     void Function(int)? onTokenCount,
   }) async =>
       {};
+
+  @override
+  Future<(Map<String, dynamic>, CactusResponse)> completeJsonWithMetadata({
+    required List<Map<String, dynamic>> messages,
+    List<Map<String, dynamic>>? tools,
+    required Map<String, dynamic> schema,
+    int retries = 3,
+    int maxTokens = 512,
+    double temperature = 0.2,
+    String? query,
+    bool enableThinking = false,
+    Uint8List? pcmData,
+    void Function(int)? onTokenCount,
+  }) async =>
+      (<String, dynamic>{}, CactusResponse(rawText: '{}'));
 
   @override
   void close() {}

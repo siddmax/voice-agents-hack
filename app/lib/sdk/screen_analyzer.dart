@@ -103,6 +103,7 @@ class ScreenAnalyzer {
   Future<BugReport> analyze({
     required String transcript,
     Uint8List? screenshotPng,
+    Uint8List? pcmData,
   }) async {
     final useImage = screenshotPng != null && _supportsVision != false;
     String? tempPath;
@@ -124,6 +125,7 @@ class ScreenAnalyzer {
         retries: 2,
         maxTokens: 1024,
         temperature: 0.1,
+        pcmData: pcmData,
       );
       if (useImage) _supportsVision = true;
       return BugReport.fromJson(result);
