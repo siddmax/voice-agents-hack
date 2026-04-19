@@ -1,10 +1,6 @@
 PODS:
   - cactus (1.14.0)
   - Flutter (1.0.0)
-  - flutter_foreground_task (0.0.1):
-    - Flutter
-  - flutter_screen_recording (0.0.1):
-    - Flutter
   - flutter_tts (0.0.1):
     - Flutter
   - permission_handler_apple (9.3.0):
@@ -13,8 +9,6 @@ PODS:
 DEPENDENCIES:
   - cactus (from `.`)
   - Flutter (from `Flutter`)
-  - flutter_foreground_task (from `.symlinks/plugins/flutter_foreground_task/ios`)
-  - flutter_screen_recording (from `.symlinks/plugins/flutter_screen_recording/ios`)
   - flutter_tts (from `.symlinks/plugins/flutter_tts/ios`)
   - permission_handler_apple (from `.symlinks/plugins/permission_handler_apple/ios`)
 
@@ -23,10 +17,6 @@ EXTERNAL SOURCES:
     :path: "."
   Flutter:
     :path: Flutter
-  flutter_foreground_task:
-    :path: ".symlinks/plugins/flutter_foreground_task/ios"
-  flutter_screen_recording:
-    :path: ".symlinks/plugins/flutter_screen_recording/ios"
   flutter_tts:
     :path: ".symlinks/plugins/flutter_tts/ios"
   permission_handler_apple:
@@ -35,8 +25,6 @@ EXTERNAL SOURCES:
 SPEC CHECKSUMS:
   cactus: 5509b7440183ae6455d072f58eb686da02e5f996
   Flutter: cabc95a1d2626b1b06e7179b784ebcf0c0cde467
-  flutter_foreground_task: a159d2c2173b33699ddb3e6c2a067045d7cebb89
-  flutter_screen_recording: d27b9073d122b618a07ef0e407470d051b265b26
   flutter_tts: 35ac3c7d42412733e795ea96ad2d7e05d0a75113
   permission_handler_apple: 4ed2196e43d0651e8ff7ca3483a069d469701f2d
 

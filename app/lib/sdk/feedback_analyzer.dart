@@ -431,6 +431,35 @@ class _SentimentEvidence {
   });
 }
 
+class BugReproEvidence {
+  final String selectedSeat;
+  final String screen;
+  final String route;
+  final List<String> userActions;
+  final String expectedOutcome;
+  final String observedOutcome;
+  final List<String> observedSignals;
+
+  const BugReproEvidence({
+    this.selectedSeat = '',
+    this.screen = '',
+    this.route = '',
+    this.userActions = const [],
+    this.expectedOutcome = '',
+    this.observedOutcome = '',
+    this.observedSignals = const [],
+  });
+
+  bool get hasFacts =>
+      selectedSeat.trim().isNotEmpty ||
+      screen.trim().isNotEmpty ||
+      route.trim().isNotEmpty ||
+      userActions.any((action) => action.trim().isNotEmpty) ||
+      expectedOutcome.trim().isNotEmpty ||
+      observedOutcome.trim().isNotEmpty ||
+      observedSignals.any((signal) => signal.trim().isNotEmpty);
+}
+
 class BugReproReport {
   final String title;
   final String summary;
@@ -517,47 +546,430 @@ class BugReproReport {
     );
   }
 
-  factory BugReproReport.fallback(String transcript, {String? videoPath}) {
-    return BugReproReport.fromNarration(transcript, videoPath: videoPath);
+  factory BugReproReport.fallback(
+    String transcript, {
+    String? videoPath,
+    String? videoUploadNote,
+  }) {
+    return BugReproReport.fromNarration(
+      transcript,
+      videoPath: videoPath,
+      videoUploadNote: videoUploadNote,
+    );
+  }
+
+  factory BugReproReport.fromEvidence(
+    BugReproEvidence evidence, {
+    required String narrationTranscript,
+    String? videoPath,
+    String? videoUploadNote,
+  }) {
+    if (!evidence.hasFacts) {
+      return BugReproReport.fromNarration(
+        narrationTranscript,
+        videoPath: videoPath,
+        videoUploadNote: videoUploadNote,
+      );
+    }
+
+    final fallback = BugReproReport.fromNarration(
+      narrationTranscript,
+      videoPath: videoPath,
+      selectedSeat: evidence.selectedSeat,
+      videoUploadNote: videoUploadNote,
+    );
+    final evidenceText = [
+      evidence.selectedSeat,
+      evidence.screen,
+      evidence.route,
+      evidence.expectedOutcome,
+      evidence.observedOutcome,
+      ...evidence.userActions,
+      ...evidence.observedSignals,
+      narrationTranscript,
+    ].join('\n');
+    final actionLower = evidence.userActions.join('\n').toLowerCase();
+    final observedLower = [
+      evidence.expectedOutcome,
+      evidence.observedOutcome,
+      ...evidence.observedSignals,
+    ].join('\n').toLowerCase();
+    final narrationLower = narrationTranscript.toLowerCase();
+    final seat = _normalizeSeat(evidence.selectedSeat);
+    final hasBuyAction = RegExp(
+      r'\b(buy now|buy|purchase|checkout|pay|continue)\b',
+    ).hasMatch(actionLower.isEmpty ? narrationLower : actionLower);
+    final hasError = RegExp(
+      r'\b(error|alert|popup|pop up|failed|failure|something went wrong)\b',
+    ).hasMatch(observedLower.isEmpty ? narrationLower : observedLower);
+    final hasSpinner = RegExp(
+      r'\b(spinner|loading|stuck|hang|hangs|forever|timeout)\b',
+    ).hasMatch(observedLower.isEmpty ? narrationLower : observedLower);
+    final steps = _buildEvidenceSteps(
+      evidence: evidence,
+      fallback: fallback,
+      seat: seat,
+      hasBuyAction: hasBuyAction,
+      hasError: hasError,
+      hasSpinner: hasSpinner,
+    );
+    final expected = evidence.expectedOutcome.trim();
+    final actual = evidence.observedOutcome.trim();
+
+    return BugReproReport(
+      title: _buildEvidenceTitle(
+        fallback: fallback,
+        seat: seat,
+        hasBuyAction: hasBuyAction,
+        hasError: hasError,
+        hasSpinner: hasSpinner,
+      ),
+      summary: _buildEvidenceSummary(
+        fallback: fallback,
+        seat: seat,
+        hasBuyAction: hasBuyAction,
+        hasError: hasError,
+        hasSpinner: hasSpinner,
+      ),
+      steps: steps,
+      expectedBehavior: expected.isEmpty
+          ? fallback.expectedBehavior
+          : _sentence(expected),
+      actualBehavior: actual.isEmpty
+          ? fallback.actualBehavior
+          : _sentence(actual),
+      severity: _reconcileSeverity('medium', evidenceText: evidenceText),
+      observedSignals: _buildEvidenceObservedSignals(
+        evidence: evidence,
+        fallback: fallback,
+        hasBuyAction: hasBuyAction,
+        hasError: hasError,
+        hasSpinner: hasSpinner,
+      ),
+      narrationTranscript: narrationTranscript,
+      videoPath: videoPath,
+      videoUploadNote: videoUploadNote,
+    );
   }
 
   factory BugReproReport.fromNarration(
     String transcript, {
     String? videoPath,
     String? selectedSeat,
+    String? videoUploadNote,
   }) {
-    final split = transcript
-        .split(
-          RegExp(r'(?:\.|\n|\bthen\b|\bafter that\b)', caseSensitive: false),
-        )
-        .map((s) => s.trim())
-        .where((s) => s.isNotEmpty)
-        .toList();
-    final steps = split.isEmpty ? [transcript] : split;
+    final normalizedTranscript = transcript.trim().replaceAll(
+      RegExp(r'\s+'),
+      ' ',
+    );
     final lower = transcript.toLowerCase();
+    final seat = _normalizeSeat(selectedSeat) ?? _extractSeat(transcript);
+    final hasSeatAction =
+        seat != null ||
+        RegExp(r'\b(tap|select|choose|open)\b.*\bseat\b').hasMatch(lower);
+    final hasBuyAction = RegExp(
+      r'\b(buy now|buy|purchase|checkout|pay|continue)\b',
+    ).hasMatch(lower);
+    final hasError = RegExp(
+      r'\b(error|alert|popup|pop up|failed|failure|something went wrong)\b',
+    ).hasMatch(lower);
+    final hasSpinner = RegExp(
+      r'\b(spinner|loading|stuck|hang|hangs|forever|timeout)\b',
+    ).hasMatch(lower);
+    final steps = _buildNarratedSteps(
+      transcript: normalizedTranscript,
+      seat: seat,
+      hasSeatAction: hasSeatAction,
+      hasBuyAction: hasBuyAction,
+      hasError: hasError,
+      hasSpinner: hasSpinner,
+    );
     final severity = _inferSeverity(lower);
-    final titleSeed = selectedSeat == null || selectedSeat.isEmpty
-        ? transcript
-        : 'Bug while using $selectedSeat';
+    final titleSeed = _buildNarratedTitle(
+      transcript: normalizedTranscript,
+      seat: seat,
+      hasBuyAction: hasBuyAction,
+      hasError: hasError,
+      hasSpinner: hasSpinner,
+    );
+    final summary = _buildNarratedSummary(
+      transcript: normalizedTranscript,
+      seat: seat,
+      hasBuyAction: hasBuyAction,
+      hasError: hasError,
+      hasSpinner: hasSpinner,
+    );
     return BugReproReport(
       title: titleSeed.length > 80
           ? '${titleSeed.substring(0, 77)}...'
           : titleSeed,
-      summary: transcript,
+      summary: summary,
       steps: steps,
       expectedBehavior: lower.contains('checkout')
           ? 'Checkout should load and allow the user to continue.'
+          : hasBuyAction
+          ? 'Tapping Buy Now should complete the purchase flow or move to the next checkout step.'
           : 'The app should complete the user action without an error.',
-      actualBehavior: transcript,
+      actualBehavior: _buildNarratedActual(
+        transcript: normalizedTranscript,
+        hasError: hasError,
+        hasSpinner: hasSpinner,
+      ),
       severity: severity,
-      observedSignals: [
-        if (lower.contains('spinner')) 'Spinner or loading state did not clear',
-        if (lower.contains('error')) 'Error dialog or error state appeared',
-        if (lower.contains('stuck')) 'Flow became stuck',
-      ],
+      observedSignals: _buildObservedSignals(
+        seat: seat,
+        hasBuyAction: hasBuyAction,
+        hasError: hasError,
+        hasSpinner: hasSpinner,
+      ),
       narrationTranscript: transcript,
       videoPath: videoPath,
+      videoUploadNote: videoUploadNote,
     );
+  }
+
+  static List<String> _buildEvidenceSteps({
+    required BugReproEvidence evidence,
+    required BugReproReport fallback,
+    required String? seat,
+    required bool hasBuyAction,
+    required bool hasError,
+    required bool hasSpinner,
+  }) {
+    final steps = evidence.userActions
+        .map(_sentence)
+        .where((step) => step.isNotEmpty)
+        .where((step) => !_isTranscriptStyleStep(step))
+        .toList();
+    String lowerSteps() => steps.join('\n').toLowerCase();
+
+    if (seat != null && !lowerSteps().contains(seat.toLowerCase())) {
+      steps.insert(0, 'Select $seat from the ticket list.');
+    }
+    if (hasBuyAction &&
+        !RegExp(
+          r'\b(buy now|buy|purchase|checkout)\b',
+        ).hasMatch(lowerSteps())) {
+      steps.add('Tap Buy Now.');
+    }
+    if (hasSpinner &&
+        !hasError &&
+        !RegExp(r'\b(wait|loading|finish loading)\b').hasMatch(lowerSteps())) {
+      steps.add('Wait for checkout to finish loading.');
+    }
+    if (hasError && !RegExp(r'\b(error|alert)\b').hasMatch(lowerSteps())) {
+      steps.add('Observe the error alert instead of a completed checkout.');
+    } else if (hasSpinner &&
+        !RegExp(
+          r'\b(stuck|does not resolve|remains)\b',
+        ).hasMatch(lowerSteps())) {
+      steps.add('Observe that the checkout flow remains stuck.');
+    }
+
+    final durable = _dedupe(steps);
+    return durable.isEmpty ? fallback.steps : durable;
+  }
+
+  static bool _isTranscriptStyleStep(String step) {
+    return RegExp(
+      r"^\s*(so\s+)?(i|we)\s+(tap|click|press|select|choose|see|saw|try|tried|am|was|were)\b",
+      caseSensitive: false,
+    ).hasMatch(step);
+  }
+
+  static String _buildEvidenceTitle({
+    required BugReproReport fallback,
+    required String? seat,
+    required bool hasBuyAction,
+    required bool hasError,
+    required bool hasSpinner,
+  }) {
+    final target = seat ?? 'selected seat';
+    if (hasBuyAction && hasError) {
+      return 'Checkout error after tapping Buy Now for $target';
+    }
+    if (hasBuyAction && hasSpinner) {
+      return 'Checkout gets stuck after tapping Buy Now for $target';
+    }
+    return fallback.title;
+  }
+
+  static String _buildEvidenceSummary({
+    required BugReproReport fallback,
+    required String? seat,
+    required bool hasBuyAction,
+    required bool hasError,
+    required bool hasSpinner,
+  }) {
+    final target = seat ?? 'the selected seat';
+    if (hasBuyAction && hasError) {
+      return 'Selecting $target and tapping Buy Now shows an error instead of completing checkout.';
+    }
+    if (hasBuyAction && hasSpinner) {
+      return 'Selecting $target and tapping Buy Now leaves checkout stuck instead of advancing.';
+    }
+    return fallback.summary;
+  }
+
+  static List<String> _buildEvidenceObservedSignals({
+    required BugReproEvidence evidence,
+    required BugReproReport fallback,
+    required bool hasBuyAction,
+    required bool hasError,
+    required bool hasSpinner,
+  }) {
+    return _dedupe([
+      if (evidence.selectedSeat.trim().isNotEmpty)
+        'Selected seat: ${evidence.selectedSeat.trim()}',
+      if (evidence.screen.trim().isNotEmpty)
+        'Screen: ${evidence.screen.trim()}',
+      if (evidence.route.trim().isNotEmpty) 'Route: ${evidence.route.trim()}',
+      ...evidence.observedSignals,
+      if (hasBuyAction) 'Buy Now action was attempted',
+      if (hasError) 'Error alert or error state appeared',
+      if (hasSpinner) 'Checkout/loading state did not resolve',
+      if (hasBuyAction && (hasError || hasSpinner))
+        'Purchase flow did not complete',
+      if (evidence.observedSignals.isEmpty) ...fallback.observedSignals,
+    ]);
+  }
+
+  static String _sentence(String value) {
+    final trimmed = value.trim().replaceAll(RegExp(r'\s+'), ' ');
+    if (trimmed.isEmpty) return '';
+    if (RegExp(r'[.!?]$').hasMatch(trimmed)) return trimmed;
+    return '$trimmed.';
+  }
+
+  static List<String> _buildNarratedSteps({
+    required String transcript,
+    required String? seat,
+    required bool hasSeatAction,
+    required bool hasBuyAction,
+    required bool hasError,
+    required bool hasSpinner,
+  }) {
+    final steps = <String>[];
+    if (hasSeatAction) {
+      steps.add(
+        seat == null
+            ? 'Select the affected seat from the ticket list.'
+            : 'Select $seat from the ticket list.',
+      );
+    }
+    if (hasBuyAction) {
+      steps.add('Tap Buy Now.');
+    }
+    if (hasSpinner) {
+      steps.add('Wait for checkout to finish loading.');
+    }
+    if (hasError) {
+      steps.add('Observe the error alert instead of a completed checkout.');
+    } else if (hasSpinner) {
+      steps.add('Observe that the checkout flow remains stuck.');
+    }
+    if (steps.isNotEmpty) return _dedupe(steps);
+    return transcript.isEmpty
+        ? const ['Reproduce the narrated action.']
+        : [transcript];
+  }
+
+  static String _buildNarratedTitle({
+    required String transcript,
+    required String? seat,
+    required bool hasBuyAction,
+    required bool hasError,
+    required bool hasSpinner,
+  }) {
+    final target = seat ?? 'selected seat';
+    if (hasBuyAction && hasError) {
+      return 'Checkout error after tapping Buy Now for $target';
+    }
+    if (hasBuyAction && hasSpinner) {
+      return 'Checkout gets stuck after tapping Buy Now for $target';
+    }
+    if (seat != null) return 'Bug while using $seat';
+    return transcript.isEmpty ? 'Bug reproduction' : transcript;
+  }
+
+  static String _buildNarratedSummary({
+    required String transcript,
+    required String? seat,
+    required bool hasBuyAction,
+    required bool hasError,
+    required bool hasSpinner,
+  }) {
+    final target = seat ?? 'the selected seat';
+    if (hasBuyAction && hasError) {
+      return 'Selecting $target and tapping Buy Now shows an error instead of completing checkout.';
+    }
+    if (hasBuyAction && hasSpinner) {
+      return 'Selecting $target and tapping Buy Now leaves checkout stuck instead of advancing.';
+    }
+    return transcript;
+  }
+
+  static String _buildNarratedActual({
+    required String transcript,
+    required bool hasError,
+    required bool hasSpinner,
+  }) {
+    if (hasError && hasSpinner) {
+      return 'Checkout does not complete; the flow remains stuck and an error alert is shown.';
+    }
+    if (hasError) {
+      return 'An error alert is shown and checkout does not complete.';
+    }
+    if (hasSpinner) {
+      return 'Checkout remains stuck in a loading state.';
+    }
+    return transcript;
+  }
+
+  static List<String> _buildObservedSignals({
+    required String? seat,
+    required bool hasBuyAction,
+    required bool hasError,
+    required bool hasSpinner,
+  }) {
+    return _dedupe([
+      if (seat != null) 'Selected seat: $seat',
+      if (hasBuyAction) 'Buy Now action was attempted',
+      if (hasError) 'Error alert or error state appeared',
+      if (hasSpinner) 'Checkout/loading state did not resolve',
+      if (hasBuyAction && (hasError || hasSpinner))
+        'Purchase flow did not complete',
+    ]);
+  }
+
+  static String? _extractSeat(String transcript) {
+    final match = RegExp(
+      r'\bsection\s+([a-z0-9]+)(?:\s*,?\s*row\s+([a-z0-9]+))?',
+      caseSensitive: false,
+    ).firstMatch(transcript);
+    if (match == null) return null;
+    final section = match.group(1);
+    final row = match.group(2);
+    if (section == null || section.isEmpty) return null;
+    if (row == null || row.isEmpty) return 'Section ${section.toUpperCase()}';
+    return 'Section ${section.toUpperCase()}, Row ${row.toUpperCase()}';
+  }
+
+  static String? _normalizeSeat(String? value) {
+    final trimmed = value?.trim();
+    if (trimmed == null || trimmed.isEmpty) return null;
+    return trimmed;
+  }
+
+  static List<String> _dedupe(Iterable<String> values) {
+    final seen = <String>{};
+    final out = <String>[];
+    for (final value in values) {
+      final cleaned = value.trim();
+      if (cleaned.isEmpty || !seen.add(cleaned.toLowerCase())) continue;
+      out.add(cleaned);
+    }
+    return out;
   }
 
   static String _normalizeSeverity(String? raw) {
@@ -584,7 +996,7 @@ class BugReproReport {
       return 'critical';
     }
     if (RegExp(
-      r"\b(stuck|blocked|broken|cannot|can't|cant|unable|spinner|timeout|forever|checkout|payment failed|purchase failed)\b",
+      r"\b(stuck|blocked|broken|cannot|can't|cant|unable|spinner|timeout|forever|checkout|buy now|error alert|payment failed|purchase failed)\b",
     ).hasMatch(lower)) {
       return 'high';
     }

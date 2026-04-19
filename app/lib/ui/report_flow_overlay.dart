@@ -511,7 +511,10 @@ class _ReproPreview extends StatelessWidget {
                 ],
               ),
               const SizedBox(height: 14),
-              _VideoEvidence(path: report.videoPath),
+              _VideoEvidence(
+                path: report.videoPath,
+                note: report.videoUploadNote,
+              ),
               const SizedBox(height: 18),
               Row(
                 children: [
@@ -542,8 +545,9 @@ class _ReproPreview extends StatelessWidget {
 
 class _VideoEvidence extends StatefulWidget {
   final String? path;
+  final String? note;
 
-  const _VideoEvidence({required this.path});
+  const _VideoEvidence({required this.path, this.note});
 
   @override
   State<_VideoEvidence> createState() => _VideoEvidenceState();
@@ -552,13 +556,19 @@ class _VideoEvidence extends StatefulWidget {
 class _VideoEvidenceState extends State<_VideoEvidence> {
   VideoPlayerController? _controller;
   Future<void>? _init;
+  bool _fileExists = false;
+  int? _fileBytes;
 
   @override
   void initState() {
     super.initState();
     final path = widget.path;
-    if (!kIsWeb && path != null && File(path).existsSync()) {
-      final controller = VideoPlayerController.file(File(path));
+    if (!kIsWeb && path != null) {
+      final file = File(path);
+      _fileExists = file.existsSync();
+      if (!_fileExists) return;
+      _fileBytes = file.lengthSync();
+      final controller = VideoPlayerController.file(file);
       _controller = controller;
       _init = controller.initialize().then((_) {
         controller.setLooping(true);
@@ -597,9 +607,9 @@ class _VideoEvidenceState extends State<_VideoEvidence> {
           ),
           const SizedBox(height: 10),
           if (controller == null)
-            const Text(
-              'Screen recording captured and will be attached when possible.',
-              style: TextStyle(color: Colors.white70),
+            Text(
+              _videoEvidenceMessage(),
+              style: const TextStyle(color: Colors.white70, height: 1.4),
             )
           else
             FutureBuilder<void>(
@@ -640,6 +650,29 @@ class _VideoEvidenceState extends State<_VideoEvidence> {
         ],
       ),
     );
+  }
+
+  String _videoEvidenceMessage() {
+    final path = widget.path;
+    if (path == null || path.isEmpty) {
+      return widget.note == null || widget.note!.isEmpty
+          ? 'No local recording path was returned. The issue will still include narration, steps, and session evidence.'
+          : '${widget.note} The issue will still include narration, steps, and session evidence.';
+    }
+    if (!_fileExists) {
+      return 'Recording path returned, but the file is not readable from Flutter. Upload may be skipped; the issue will include the local path and diagnostics.';
+    }
+    final bytes = _fileBytes;
+    final size = bytes == null ? 'unknown size' : _formatBytes(bytes);
+    return 'Captured locally ($size). The recording will be uploaded before the GitHub issue is created.';
+  }
+
+  String _formatBytes(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    final kb = bytes / 1024;
+    if (kb < 1024) return '${kb.toStringAsFixed(1)} KB';
+    final mb = kb / 1024;
+    return '${mb.toStringAsFixed(1)} MB';
   }
 }
 

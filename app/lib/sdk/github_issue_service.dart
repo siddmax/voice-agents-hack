@@ -34,12 +34,17 @@ class GitHubIssueFailure implements Exception {
 class GitHubIssueService {
   final GitHubConfig? config;
   final GitHubClient? _client;
+  String? _lastUploadError;
+  int? _lastUploadBytes;
 
   GitHubIssueService({GitHubConfig? config, GitHubClient? client})
     : config = config ?? GitHubConfig.fromEnvironment(),
       _client = client;
 
   bool get isReady => config != null || _client != null;
+
+  String? get lastUploadError => _lastUploadError;
+  int? get lastUploadBytes => _lastUploadBytes;
 
   String get readinessMessage {
     if (isReady) return 'GitHub issue submission is configured.';
@@ -78,13 +83,30 @@ class GitHubIssueService {
   }
 
   Future<String?> uploadVideoFile(String path) async {
+    _lastUploadError = null;
+    _lastUploadBytes = null;
     final resolvedConfig = config;
-    if (resolvedConfig == null && _client == null) return null;
+    if (resolvedConfig == null && _client == null) {
+      _lastUploadError =
+          'GitHub is not configured, so the recording was not uploaded.';
+      return null;
+    }
     final file = File(path);
-    if (!await file.exists()) return null;
+    if (!await file.exists()) {
+      _lastUploadError =
+          'The local screen recording file was not found at $path.';
+      return null;
+    }
+    _lastUploadBytes = await file.length();
 
     final client = _client ?? _clientFromConfig(resolvedConfig!);
-    return client.uploadVideo(await file.readAsBytes());
+    final url = await client.uploadVideo(await file.readAsBytes());
+    if (url == null) {
+      _lastUploadError =
+          client.lastError ??
+          'GitHub did not return a URL for the uploaded recording.';
+    }
+    return url;
   }
 
   GitHubClient _clientFromConfig(GitHubConfig config) {

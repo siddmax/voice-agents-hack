@@ -561,6 +561,37 @@ void main() {
       expect(report.severity, 'high');
     });
 
+    test('fromEvidence prioritizes app facts over first-person narration', () {
+      final report = BugReproReport.fromEvidence(
+        const BugReproEvidence(
+          selectedSeat: 'Section 105, Row 10',
+          screen: 'Checkout',
+          route: '/checkout/seat/select',
+          userActions: [
+            'Select Section 105, Row 10 from the ticket list.',
+            'Tap Buy Now.',
+          ],
+          expectedOutcome: 'Checkout should advance.',
+          observedOutcome:
+              'An error alert is shown and checkout does not complete.',
+          observedSignals: ['Error alert or error state appeared'],
+        ),
+        narrationTranscript:
+            'So I tap on the section row button and I see this error alert pop up.',
+        videoPath: '/tmp/repro.mp4',
+      );
+
+      expect(report.steps, [
+        'Select Section 105, Row 10 from the ticket list.',
+        'Tap Buy Now.',
+        'Observe the error alert instead of a completed checkout.',
+      ]);
+      expect(report.steps.join(' '), isNot(contains('So I')));
+      expect(report.actualBehavior, contains('error alert'));
+      expect(report.observedSignals, contains('Route: /checkout/seat/select'));
+      expect(report.videoPath, '/tmp/repro.mp4');
+    });
+
     test('hydrates empty bug fields from narration fallback', () {
       final report = BugReproReport.fromJson(
         {
@@ -577,10 +608,20 @@ void main() {
       );
 
       expect(report.title, isNotEmpty);
-      expect(report.steps, ['Tap buy', 'checkout gets stuck']);
+      expect(report.steps, [
+        'Tap Buy Now.',
+        'Wait for checkout to finish loading.',
+        'Observe that the checkout flow remains stuck.',
+      ]);
       expect(report.expectedBehavior, contains('Checkout should load'));
-      expect(report.actualBehavior, 'Tap buy then checkout gets stuck');
-      expect(report.observedSignals, contains('Flow became stuck'));
+      expect(
+        report.actualBehavior,
+        'Checkout remains stuck in a loading state.',
+      );
+      expect(
+        report.observedSignals,
+        contains('Checkout/loading state did not resolve'),
+      );
       expect(report.videoPath, '/tmp/repro.mp4');
     });
   });

@@ -12,6 +12,7 @@ class GitHubClient {
   Future<void> _assetUploadTail = Future<void>.value();
 
   static const _assetBranch = 'voicebug-assets';
+  static const maxVideoUploadBytes = 95 * 1024 * 1024;
 
   GitHubClient({required this.owner, required this.repo, required this.token});
 
@@ -32,8 +33,11 @@ class GitHubClient {
   }
 
   Future<String?> uploadVideo(Uint8List videoBytes) async {
-    const maxVideoBytes = 10 * 1024 * 1024;
-    if (videoBytes.length > maxVideoBytes) return null;
+    if (videoBytes.length > maxVideoUploadBytes) {
+      _lastError =
+          'Screen recording is ${(videoBytes.length / (1024 * 1024)).toStringAsFixed(1)} MB, above the 95 MB upload limit.';
+      return null;
+    }
     return _uploadAsset(
       pathPrefix: 'videos',
       extension: 'mp4',
@@ -49,6 +53,7 @@ class GitHubClient {
     required String messagePrefix,
   }) {
     return _enqueueAssetUpload(() async {
+      _lastError = null;
       final timestamp = DateTime.now().millisecondsSinceEpoch;
       final path = '$pathPrefix/$timestamp.$extension';
       final b64 = base64Encode(bytes);
@@ -57,14 +62,25 @@ class GitHubClient {
 
       if (resp.statusCode == 404) {
         final created = await _createAssetBranch();
-        if (!created) return null;
+        if (!created) {
+          _lastError =
+              'Unable to create the $_assetBranch branch for evidence uploads.';
+          return null;
+        }
         resp = await _putContent(path, b64, '$messagePrefix $timestamp');
       }
 
       if (resp.statusCode == 201 || resp.statusCode == 200) {
         final data = jsonDecode(resp.body);
-        return data['content']?['download_url'] as String?;
+        final downloadUrl = data['content']?['download_url'] as String?;
+        if (downloadUrl == null || downloadUrl.isEmpty) {
+          _lastError =
+              'GitHub accepted the upload but did not return a file URL.';
+          return null;
+        }
+        return downloadUrl;
       }
+      _lastError = _extractApiError(resp);
       return null;
     });
   }
@@ -126,7 +142,7 @@ class GitHubClient {
       Uri.parse('https://api.github.com/repos/$owner/$repo/git/commits'),
       headers: _headers,
       body: jsonEncode({
-        'message': 'Initialize VoiceBug screenshot storage',
+        'message': 'Initialize VoiceBug evidence storage',
         'tree': treeSha,
         'parents': <String>[],
       }),
