@@ -3,16 +3,27 @@ import 'dart:convert';
 import 'tool_registry.dart';
 import 'todos.dart';
 
+// Welfare framing throughout — directive language ("you MUST") gets ignored
+// by small models surprisingly often; user-impact language ("if you skip this,
+// the user loses X") taps RLHF training and lands more reliably. See
+// the empirical write-up at https://www.reddit.com/r/ClaudeAI/ on hook
+// directives, and the Control Illusion paper (arXiv 2502, Feb 2025) showing
+// instruction-hierarchy compliance ≈47.5% even on frontier models.
 const _identity = '''
-You are Syndai — an on-device voice cowork agent. You run locally on the user's
-phone via Gemma 4 E4B on the Cactus runtime. You are honest, warm, concise.
-You help the user make progress on real work by planning with a TODO ledger,
-calling tools (local + any MCP servers the user has connected), and explaining
-what you are doing in short spoken sentences. You do not invent tool results,
-you do not pretend to have access you don't have, and you don't pad answers.
-When a task is genuinely done, call the finish tool. If you need info from the
-user, call request_user_input. Keep responses short — this is voice. Prefer
-action over commentary.
+You are Syndai — the user's on-device voice cowork agent. You run locally on
+their phone (Gemma 4 on the Cactus runtime). The user trusts you with real
+work and is listening for a short spoken reply, so:
+
+- Be honest, warm, concise. Padding wastes their time and battery.
+- Call tools to make progress. Inventing tool results breaks their trust and
+  the rest of the run depends on the result being real.
+- When the task is genuinely done, call the finish tool — otherwise the user
+  is left waiting on an orb that never resolves.
+- When you need info only the user has, call request_user_input — otherwise
+  you'll guess wrong and ship the wrong action.
+- Keep replies short. This is voice; long answers are painful to listen to.
+- Prefer action over commentary. The user opened the app to get something
+  done, not to chat.
 ''';
 
 // Approx 4 chars per token. Used for memory truncation + tool-result preview.
@@ -67,17 +78,20 @@ class PromptAssembler {
     return '''
 $_identity
 
---- OUTPUT FORMAT (strict) ---
-Every reply MUST be a single JSON object with exactly two keys:
+--- OUTPUT FORMAT ---
+Every reply needs to be one JSON object that parses cleanly:
   {"name": "<tool_name>", "arguments": {<args>}}
 
-No prose. No code fences. No wrappers like {"function": ...} or {"tool_call": ...}.
-Pick the tool by name from the AVAILABLE TOOLS list below. The whole reply
-must parse as JSON.
+If you reply with prose, code fences, or a wrapper like {"function": {...}}
+or {"tool_call": {...}}, the user's tap silently does nothing — their
+intended action is lost. The runtime can only execute what it can parse.
+
+Pick the tool name from the AVAILABLE TOOLS list. A name not in the list
+fails silently for the same reason.
 
 Example: {"name": "finish", "arguments": {"summary": "Done."}}
 
---- AVAILABLE TOOLS ---
+--- AVAILABLE TOOLS (passive context — always loaded) ---
 ${_renderToolList()}
 
 --- MEMORY ---
@@ -88,6 +102,13 @@ $ledger$goal
 ''';
   }
 
+  // Tool list as passive context, AGENTS.md style: name + one-line purpose +
+  // required arg names. Compressed enough to live in every turn's prompt
+  // (~50 tokens per tool). Full input schemas still travel to cactus via
+  // toolsJson — this is the human-readable index the model selects from.
+  // Empirically (Vercel Next.js docs eval, Jan 2026) AGENTS.md-style passive
+  // context outperforms on-demand skill retrieval because there's no
+  // decision point about whether to look something up.
   String _renderToolList() {
     final reg = toolRegistry;
     if (reg == null) return '(tool list unavailable — pick from the tools the host passed.)';
@@ -97,8 +118,16 @@ $ledger$goal
       final desc = t.description.length > 100
           ? '${t.description.substring(0, 100)}…'
           : t.description;
-      return '- ${t.name}: $desc';
+      final required = _requiredArgNames(t.inputSchema);
+      final reqStr = required.isEmpty ? '' : ' · args: ${required.join(", ")}';
+      return '- ${t.name}: $desc$reqStr';
     }).join('\n');
+  }
+
+  List<String> _requiredArgNames(Map<String, dynamic> schema) {
+    final r = schema['required'];
+    if (r is! List) return const [];
+    return r.whereType<String>().toList();
   }
 
   /// Replace large tool outputs with a handle + preview. Returns the

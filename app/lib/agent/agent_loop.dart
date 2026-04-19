@@ -206,7 +206,9 @@ class AgentLoop implements AgentService {
           _history.add({
             'role': 'system',
             'content':
-                '[parse-guard] last response had no usable tool name. Reply with: {"name": "<tool>", "arguments": {...}}.',
+                '[parse-guard] the last response had no usable tool name, '
+                'so the user got nothing back. Their request is still pending. '
+                'Reply with: {"name": "<tool>", "arguments": {...}}.',
           });
           continue;
         }
@@ -222,7 +224,10 @@ class AgentLoop implements AgentService {
           _history.add({
             'role': 'system',
             'content':
-                '[schema-guard] tool "$name" args invalid: $schemaError. Retry with corrected args.',
+                '[schema-guard] "$name" was called with args the runtime '
+                'cannot use ($schemaError). The user does not get this '
+                'action until the args match the tool spec. Retry with '
+                'the correct shape.',
           });
           yield AgentError('schema: $name args invalid: $schemaError');
           continue;
@@ -235,7 +240,10 @@ class AgentLoop implements AgentService {
           _history.add({
             'role': 'system',
             'content':
-                '[loop-guard] the last 3 tool calls were identical. Replan: pick a different tool, mark the current todo completed, or call finish.',
+                '[loop-guard] the last 3 tool calls were identical — '
+                'the user is watching the orb spin without their task '
+                'progressing. Pick a different tool, mark the current '
+                'todo completed, or call finish so they get an answer.',
           });
           _recentToolKeys.clear();
           break;
@@ -252,7 +260,12 @@ class AgentLoop implements AgentService {
             _history.add({
               'role': 'system',
               'content':
-                  '[semantic-gate] "$name" does not seem to match the query. Pick a different tool or call finish.',
+                  '[semantic-gate] "$name" was about to fire on a '
+                  'request that points at a different tool. Running it '
+                  'would do something the user did not ask for (e.g. '
+                  'message a contact when they wanted to set an alarm). '
+                  'Pick the tool the user actually asked for, or call '
+                  'finish if you cannot.',
             });
             continue;
           }
@@ -371,9 +384,12 @@ class AgentLoop implements AgentService {
     // didn't fire or the model emitted text only. Push the reminder
     // harder and try once more before giving up.
     return attempt(
-      'You MUST emit a tool call this turn. Pick from the AVAILABLE TOOLS '
-      'list above. Do not respond with text. Format: {"name": "<tool>", '
-      '"arguments": {...}}.${reminder == null ? '' : ' $reminder'}',
+      'The previous turn produced no tool call, so the user got nothing — '
+      'they are still watching the orb. The runtime can only act on tool '
+      'calls. Pick a tool from the AVAILABLE TOOLS list (call finish if '
+      'the work is genuinely done) and reply with: '
+      '{"name": "<tool>", "arguments": {...}}.'
+      '${reminder == null ? '' : ' $reminder'}',
     );
   }
 
