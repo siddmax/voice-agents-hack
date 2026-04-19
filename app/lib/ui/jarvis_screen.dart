@@ -246,7 +246,8 @@ class _JarvisScreenState extends State<JarvisScreen> {
     final chat = context.watch<ChatController>();
     final reportReady = _reportReady(chat.events);
     final submitted = _issueSubmitted(chat.events);
-    final wide = MediaQuery.of(context).size.width >= 1120;
+    final screenWidth = MediaQuery.of(context).size.width;
+    final wide = screenWidth >= 1120;
     final dashboard = DropGuardDashboard(
       events: chat.events,
       transcript: _transcriptDraft,
@@ -260,14 +261,14 @@ class _JarvisScreenState extends State<JarvisScreen> {
             wide
                 ? Row(
                     children: [
-                      Expanded(flex: 11, child: _buildSimulatorPane(chat, reportReady, submitted)),
+                      Expanded(flex: 11, child: _buildSimulatorPane(chat, reportReady, submitted, compact: false)),
                       const VerticalDivider(width: 1),
                       Expanded(flex: 8, child: dashboard),
                     ],
                   )
                 : Column(
                     children: [
-                      Expanded(flex: 10, child: _buildSimulatorPane(chat, reportReady, submitted)),
+                      Expanded(flex: 10, child: _buildSimulatorPane(chat, reportReady, submitted, compact: true)),
                       const Divider(height: 1),
                       SizedBox(height: 260, child: dashboard),
                     ],
@@ -296,8 +297,9 @@ class _JarvisScreenState extends State<JarvisScreen> {
   Widget _buildSimulatorPane(
     ChatController chat,
     bool reportReady,
-    bool submitted,
-  ) {
+    bool submitted, {
+    bool compact = false,
+  }) {
     final theme = Theme.of(context);
     return DecoratedBox(
       decoration: const BoxDecoration(
@@ -309,7 +311,35 @@ class _JarvisScreenState extends State<JarvisScreen> {
       ),
       child: Padding(
         padding: const EdgeInsets.fromLTRB(20, 18, 20, 20),
-        child: Column(
+        child: compact
+          ? ListView(
+              children: [
+                Text(
+                  'Drop-Guard',
+                  style: theme.textTheme.headlineSmall?.copyWith(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 0.4,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  'Ticketing simulator · voice-first incident capture for GitHub Issues',
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: Colors.white70,
+                  ),
+                ),
+                const SizedBox(height: 18),
+                _TicketmasterSurface(
+                  spinnerStuck: _spinnerStuck,
+                  attempts: _addToCartAttempts,
+                  onActivateFailure: _triggerSeatLock,
+                ),
+                const SizedBox(height: 16),
+                _buildVoicePanel(chat, reportReady, submitted),
+              ],
+            )
+          : Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
@@ -335,32 +365,34 @@ class _JarvisScreenState extends State<JarvisScreen> {
             ),
             const SizedBox(height: 16),
             _buildVoicePanel(chat, reportReady, submitted),
-            const SizedBox(height: 16),
-            Expanded(
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  color: Colors.white.withValues(alpha: 0.06),
-                  borderRadius: BorderRadius.circular(22),
-                  border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-                      child: Text(
-                        'Live agent feed',
-                        style: theme.textTheme.titleMedium?.copyWith(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w700,
+            if (!compact) ...[
+              const SizedBox(height: 16),
+              Expanded(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.06),
+                    borderRadius: BorderRadius.circular(22),
+                    border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+                        child: Text(
+                          'Live agent feed',
+                          style: theme.textTheme.titleMedium?.copyWith(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w700,
+                          ),
                         ),
                       ),
-                    ),
-                    Expanded(child: ActivityFeed(events: chat.events)),
-                  ],
+                      Expanded(child: ActivityFeed(events: chat.events)),
+                    ],
+                  ),
                 ),
               ),
-            ),
+            ],
           ],
         ),
       ),
