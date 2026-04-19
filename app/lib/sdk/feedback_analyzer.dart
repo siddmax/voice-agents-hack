@@ -1180,9 +1180,9 @@ class FeedbackAnalyzer {
     Uint8List? pcmData,
     void Function(String activity)? onProgress,
   }) async {
-    onProgress?.call('Agent thinking');
+    await _showProgress(onProgress, 'Agent thinking');
     final initial = FeedbackReport.fromTranscript(transcript);
-    onProgress?.call('Agent searching KB');
+    await _showProgress(onProgress, 'Agent searching KB');
     final kbMatches = await knowledgeBase.search(
       transcript: transcript,
       category: initial.category,
@@ -1191,14 +1191,14 @@ class FeedbackAnalyzer {
     );
     var kbContext = FeedbackKnowledgeBase.renderForPrompt(kbMatches);
     if (enableNativeRag) {
-      onProgress?.call('Agent using Cactus RAG');
+      await _showProgress(onProgress, 'Agent using Cactus RAG');
       final nativeContext = await _nativeRagContext(transcript);
       if (nativeContext.trim().isNotEmpty) {
         kbContext = '$kbContext\n\n$nativeContext';
       }
     }
     try {
-      onProgress?.call('Agent summarizing');
+      await _showProgress(onProgress, 'Agent summarizing', visible: false);
       final result = await engine.completeJson(
         messages: [
           {
@@ -1223,6 +1223,16 @@ class FeedbackAnalyzer {
     } catch (_) {
       return _attachResolution(FeedbackReport.fallback(transcript), kbMatches);
     }
+  }
+
+  Future<void> _showProgress(
+    void Function(String activity)? onProgress,
+    String activity, {
+    bool visible = true,
+  }) async {
+    onProgress?.call(activity);
+    if (!visible) return;
+    await Future<void>.delayed(const Duration(milliseconds: 220));
   }
 
   Future<BugReproReport> analyzeBugRepro({

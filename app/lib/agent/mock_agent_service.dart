@@ -209,12 +209,12 @@ class MockAgentService implements AgentService {
     Uint8List? pcmData,
     void Function(String activity)? onProgress,
   }) async {
-    onProgress?.call('Agent thinking');
+    await _showProgress(onProgress, 'Agent thinking');
     final report = FeedbackReport.fromTranscript(transcript);
     if (!report.sentiment.offerEligible && !report.complaintsPresent) {
       return report;
     }
-    onProgress?.call('Agent searching KB');
+    await _showProgress(onProgress, 'Agent searching KB');
     final kb = FeedbackKnowledgeBase.bundled();
     final matches = await kb.search(
       transcript: transcript,
@@ -224,5 +224,13 @@ class MockAgentService implements AgentService {
     );
     onProgress?.call('Agent summarizing');
     return report.withResolution(kb.buildResolution(matches));
+  }
+
+  Future<void> _showProgress(
+    void Function(String activity)? onProgress,
+    String activity,
+  ) async {
+    onProgress?.call(activity);
+    await Future<void>.delayed(const Duration(milliseconds: 220));
   }
 }

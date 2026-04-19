@@ -533,11 +533,18 @@ Checkout route transitions can drop promotion metadata.
           ]),
         );
 
+        final progress = <String>[];
         final report = await analyzer.analyzeFeedback(
           transcript: 'I like the seat map, but checkout is confusing.',
+          onProgress: progress.add,
         );
 
         expect(report.sentiment, Sentiment.mixedNegative);
+        expect(progress, [
+          'Agent thinking',
+          'Agent searching KB',
+          'Agent summarizing',
+        ]);
         expect(report.offer, FeedbackReport.negativeOffer);
         expect(report.resolution?.summary, contains('Coupon discount'));
         expect(
