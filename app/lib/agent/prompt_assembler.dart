@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'tool_registry.dart';
 import 'todos.dart';
 
 const _identity = '''
@@ -45,11 +46,13 @@ class PromptAssembler {
   final TodoStore todos;
   final String Function() readMemory;
   final ToolResultStore toolResults;
+  final ToolRegistry? toolRegistry;
 
   PromptAssembler({
     required this.todos,
     required this.readMemory,
     required this.toolResults,
+    this.toolRegistry,
   });
 
   String _buildSystem() {
@@ -64,12 +67,38 @@ class PromptAssembler {
     return '''
 $_identity
 
+--- OUTPUT FORMAT (strict) ---
+Every reply MUST be a single JSON object with exactly two keys:
+  {"name": "<tool_name>", "arguments": {<args>}}
+
+No prose. No code fences. No wrappers like {"function": ...} or {"tool_call": ...}.
+Pick the tool by name from the AVAILABLE TOOLS list below. The whole reply
+must parse as JSON.
+
+Example: {"name": "finish", "arguments": {"summary": "Done."}}
+
+--- AVAILABLE TOOLS ---
+${_renderToolList()}
+
 --- MEMORY ---
 $mem
 
 --- TODOS ---
 $ledger$goal
 ''';
+  }
+
+  String _renderToolList() {
+    final reg = toolRegistry;
+    if (reg == null) return '(tool list unavailable — pick from the tools the host passed.)';
+    final tools = reg.all;
+    if (tools.isEmpty) return '(no tools registered.)';
+    return tools.map((t) {
+      final desc = t.description.length > 100
+          ? '${t.description.substring(0, 100)}…'
+          : t.description;
+      return '- ${t.name}: $desc';
+    }).join('\n');
   }
 
   /// Replace large tool outputs with a handle + preview. Returns the

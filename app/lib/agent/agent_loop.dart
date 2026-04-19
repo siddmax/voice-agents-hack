@@ -191,8 +191,21 @@ class AgentLoop implements AgentService {
         await _logSession(userInput, 'no tool call');
         return;
       }
-      final name = call['name'] as String;
-      final args = (call['arguments'] as Map?)?.cast<String, dynamic>() ?? {};
+      // Tolerate Gemma's JSON shape drift: the 4B model sometimes omits the
+      // 'name' field, wraps the call in {tool_call: {...}} or {function: {...}},
+      // or returns just the args. _extractCall tries the common shapes; if
+      // none works we treat the turn as a parse failure and ask for a retry.
+      final extracted = _extractCall(call);
+      if (extracted == null) {
+        _history.add({
+          'role': 'system',
+          'content':
+              '[parse-guard] last response had no usable tool name. Reply with a single JSON object: {"name": "<tool>", "arguments": {...}}.',
+        });
+        continue;
+      }
+      final name = extracted.$1;
+      final args = extracted.$2;
 
       final key = _canonicalKey(name, args);
       _recentToolKeys.add(key);
@@ -338,6 +351,34 @@ class AgentLoop implements AgentService {
     } catch (_) {
       return null;
     }
+  }
+
+  /// Pull (name, args) out of whatever shape the model emitted. Returns
+  /// null if no recognizable tool name can be found.
+  (String, Map<String, dynamic>)? _extractCall(Map<String, dynamic> raw) {
+    Map<String, dynamic>? unwrap(Object? v) {
+      if (v is Map) return v.cast<String, dynamic>();
+      return null;
+    }
+
+    final candidates = <Map<String, dynamic>>[
+      raw,
+      if (unwrap(raw['tool_call']) != null) unwrap(raw['tool_call'])!,
+      if (unwrap(raw['function']) != null) unwrap(raw['function'])!,
+      if (unwrap(raw['call']) != null) unwrap(raw['call'])!,
+    ];
+
+    for (final c in candidates) {
+      final name = c['name'] ?? c['tool'] ?? c['function_name'];
+      if (name is String && name.trim().isNotEmpty) {
+        final args = unwrap(c['arguments']) ??
+            unwrap(c['args']) ??
+            unwrap(c['parameters']) ??
+            <String, dynamic>{};
+        return (name, args);
+      }
+    }
+    return null;
   }
 
   String _canonicalKey(String name, Map<String, dynamic> args) {

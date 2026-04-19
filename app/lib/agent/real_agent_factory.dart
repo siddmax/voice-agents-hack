@@ -28,6 +28,7 @@ class RealAgentFactory {
         todos: todos,
         readMemory: memory.readAll,
         toolResults: toolResults,
+        toolRegistry: toolRegistry,
       );
       final mcp = McpRegistry(toolRegistry);
       await mcp.connectAll(mcpConfigs);
