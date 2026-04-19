@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_dotenv/flutter_dotenv.dart';
 
 import 'cactus/engine.dart';
 import 'sdk/capture_flow.dart';
 import 'sdk/github_client.dart';
+import 'sdk/github_config.dart';
 import 'sdk/screenshot_capture.dart';
 import 'ui/voicebug_button.dart';
 import 'ui/voicebug_overlay.dart';
@@ -21,18 +21,21 @@ class _VoiceBugDemoState extends State<VoiceBugDemo> {
   late final CaptureFlowController _capture;
   final _boundaryKey = GlobalKey();
 
-  String get _ghOwner => dotenv.get('VOICEBUG_GH_OWNER', fallback: '');
-  String get _ghRepo => dotenv.get('VOICEBUG_GH_REPO', fallback: '');
-  String get _ghToken => dotenv.get('VOICEBUG_GH_TOKEN', fallback: '');
-
   @override
   void initState() {
     super.initState();
     final screenshotCapture = ScreenshotCapture()..attach(_boundaryKey);
+    final config =
+        GitHubConfig.fromEnvironment() ??
+        const GitHubConfig(owner: '', repo: '', token: '');
     _capture = CaptureFlowController(
       engine: widget.engine,
       stt: SpeechToTextService(),
-      github: GitHubClient(owner: _ghOwner, repo: _ghRepo, token: _ghToken),
+      github: GitHubClient(
+        owner: config.owner,
+        repo: config.repo,
+        token: config.token,
+      ),
       screenshot: screenshotCapture,
     );
   }
@@ -45,8 +48,7 @@ class _VoiceBugDemoState extends State<VoiceBugDemo> {
 
   @override
   Widget build(BuildContext context) {
-    final missingConfig =
-        _ghOwner.isEmpty || _ghRepo.isEmpty || _ghToken.isEmpty;
+    final missingConfig = GitHubConfig.fromEnvironment() == null;
 
     return MaterialApp(
       title: 'Ticketmaster',
@@ -66,7 +68,8 @@ class _VoiceBugDemoState extends State<VoiceBugDemo> {
                     'Add to app/.env:\n'
                     'VOICEBUG_GH_OWNER=owner\n'
                     'VOICEBUG_GH_REPO=repo\n'
-                    'VOICEBUG_GH_TOKEN=ghp_xxx',
+                    'VOICEBUG_GH_TOKEN=ghp_xxx\n\n'
+                    'You can also provide the same keys via environment variables or --dart-define.',
                     style: TextStyle(color: Colors.white54, fontSize: 14),
                   ),
                 ),

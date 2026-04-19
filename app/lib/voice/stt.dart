@@ -35,6 +35,7 @@ class SpeechToTextService {
 
   Future<SttStartResult> startListening({
     void Function(String partial)? onPartial,
+    void Function(String finalText)? onFinal,
   }) async {
     if (_listening) return SttStartResult.started;
 
@@ -69,6 +70,7 @@ class SpeechToTextService {
       onResult: (r) {
         _buffer = r.recognizedWords;
         if (onPartial != null) onPartial(_buffer);
+        if (r.finalResult && onFinal != null) onFinal(_buffer);
       },
       onSoundLevelChange: (level) {
         final normalized = ((level + 2) / 12).clamp(0.0, 1.0);

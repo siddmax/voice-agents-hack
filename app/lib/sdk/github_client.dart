@@ -7,19 +7,18 @@ class GitHubClient {
   final String owner;
   final String repo;
   final String token;
+  String? _lastError;
 
   static const _assetBranch = 'voicebug-assets';
 
-  GitHubClient({
-    required this.owner,
-    required this.repo,
-    required this.token,
-  });
+  GitHubClient({required this.owner, required this.repo, required this.token});
 
   Map<String, String> get _headers => {
-        'Authorization': 'token $token',
-        'Accept': 'application/vnd.github.v3+json',
-      };
+    'Authorization': 'token $token',
+    'Accept': 'application/vnd.github.v3+json',
+  };
+
+  String? get lastError => _lastError;
 
   Future<String?> uploadScreenshot(Uint8List pngBytes) async {
     final timestamp = DateTime.now().millisecondsSinceEpoch;
@@ -70,7 +69,12 @@ class GitHubClient {
       headers: _headers,
       body: jsonEncode({
         'tree': [
-          {'path': 'README.md', 'mode': '100644', 'type': 'blob', 'sha': blobSha},
+          {
+            'path': 'README.md',
+            'mode': '100644',
+            'type': 'blob',
+            'sha': blobSha,
+          },
         ],
       }),
     );
@@ -92,10 +96,7 @@ class GitHubClient {
     final refResp = await http.post(
       Uri.parse('https://api.github.com/repos/$owner/$repo/git/refs'),
       headers: _headers,
-      body: jsonEncode({
-        'ref': 'refs/heads/$_assetBranch',
-        'sha': commitSha,
-      }),
+      body: jsonEncode({'ref': 'refs/heads/$_assetBranch', 'sha': commitSha}),
     );
     return refResp.statusCode == 201;
   }
@@ -105,15 +106,12 @@ class GitHubClient {
     required String body,
     required List<String> labels,
   }) async {
+    _lastError = null;
     final url = Uri.parse('https://api.github.com/repos/$owner/$repo/issues');
     var resp = await http.post(
       url,
       headers: _headers,
-      body: jsonEncode({
-        'title': title,
-        'body': body,
-        'labels': labels,
-      }),
+      body: jsonEncode({'title': title, 'body': body, 'labels': labels}),
     );
 
     if (resp.statusCode == 403) {
@@ -131,7 +129,27 @@ class GitHubClient {
       final data = jsonDecode(resp.body);
       return data['html_url'] as String?;
     }
+    _lastError = _extractApiError(resp);
     return null;
+  }
+
+  String _extractApiError(http.Response resp) {
+    try {
+      final decoded = jsonDecode(resp.body);
+      if (decoded is Map<String, dynamic>) {
+        final message = (decoded['message'] as String?)?.trim() ?? '';
+        if (message.isNotEmpty) {
+          final docsUrl =
+              (decoded['documentation_url'] as String?)?.trim() ?? '';
+          return docsUrl.isEmpty
+              ? 'GitHub API ${resp.statusCode}: $message'
+              : 'GitHub API ${resp.statusCode}: $message ($docsUrl)';
+        }
+      }
+    } catch (_) {
+      // Fall through to a generic HTTP error.
+    }
+    return 'GitHub API ${resp.statusCode}: ${resp.reasonPhrase ?? 'request failed'}';
   }
 
   static String formatIssueBody({

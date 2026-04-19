@@ -19,6 +19,7 @@ class _FakeStt extends SpeechToTextService {
   @override
   Future<SttStartResult> startListening({
     void Function(String)? onPartial,
+    void Function(String)? onFinal,
   }) async {
     if (nextResult == SttStartResult.started && onPartial != null) {
       onPartial(nextTranscript);

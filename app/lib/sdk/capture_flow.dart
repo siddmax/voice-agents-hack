@@ -8,15 +8,25 @@ import '../voice/audio_recorder.dart';
 import '../voice/stt.dart';
 import 'device_metadata.dart';
 import 'github_client.dart';
+import 'github_issue_service.dart';
 import 'screen_analyzer.dart';
 import 'screenshot_capture.dart';
 
-enum CaptureState { idle, listening, analyzing, previewing, submitting, done, error }
+enum CaptureState {
+  idle,
+  listening,
+  analyzing,
+  previewing,
+  submitting,
+  done,
+  error,
+}
 
 class CaptureFlowController extends ChangeNotifier {
   final CactusEngine engine;
   final SpeechToTextService stt;
   final GitHubClient github;
+  final GitHubIssueService issueService;
   final ScreenshotCapture screenshot;
   final ScreenAnalyzer analyzer;
   final PcmCapture _recorder;
@@ -58,10 +68,12 @@ class CaptureFlowController extends ChangeNotifier {
     required this.engine,
     required this.stt,
     required this.github,
+    GitHubIssueService? issueService,
     required this.screenshot,
     PcmCapture? recorder,
-  })  : analyzer = ScreenAnalyzer(engine),
-        _recorder = recorder ?? PcmRecorder();
+  }) : issueService = issueService ?? GitHubIssueService(client: github),
+       analyzer = ScreenAnalyzer(engine),
+       _recorder = recorder ?? PcmRecorder();
 
   Future<void> startCapture(BuildContext context) async {
     if (_state != CaptureState.idle) return;
@@ -178,18 +190,21 @@ class CaptureFlowController extends ChangeNotifier {
         rawTranscript: _transcript,
       );
 
-      _issueUrl = await github.createIssue(
-        title: '\u{1F41B} ${_report!.title}',
-        body: body,
-        labels: ['bug', 'voicebug', 'severity:${_report!.severity}'],
+      final submission = await issueService.submit(
+        GitHubIssueRequest(
+          title: '\u{1F41B} ${_report!.title}',
+          body: body,
+          labels: ['bug', 'voicebug', 'severity:${_report!.severity}'],
+        ),
       );
+      _issueUrl = submission.url;
 
       if (_issueUrl != null) {
         _state = CaptureState.done;
-      } else {
-        _state = CaptureState.error;
-        _errorMessage = 'Failed to create GitHub Issue. Check your token and repo settings.';
       }
+    } on GitHubIssueFailure catch (e) {
+      _state = CaptureState.error;
+      _errorMessage = e.message;
     } catch (e) {
       _state = CaptureState.error;
       _errorMessage = 'GitHub API error: $e';

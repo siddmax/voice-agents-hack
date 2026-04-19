@@ -123,6 +123,8 @@ class ChatController extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<String?> transcribe(Uint8List pcm) => agent.transcribe(pcm);
+
   @override
   Future<void> dispose() async {
     await _sub?.cancel();

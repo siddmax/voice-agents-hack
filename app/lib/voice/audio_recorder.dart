@@ -29,6 +29,7 @@ class PcmRecorder implements PcmCapture {
     bitRate: 256000,
   );
 
+  @override
   bool get isRecording => _recording;
 
   @override

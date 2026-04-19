@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'agent_service.dart';
 
@@ -196,4 +197,7 @@ class MockAgentService implements AgentService {
     await _controller?.close();
     _controller = null;
   }
+
+  @override
+  Future<String?> transcribe(Uint8List pcm) async => null;
 }

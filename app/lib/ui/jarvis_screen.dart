@@ -1,13 +1,14 @@
 import 'dart:async';
 import 'dart:math' as math;
 
-import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../agent/agent_service.dart';
-import '../voice/stt.dart';
+import '../agent/mock_agent_service.dart';
+import '../sdk/github_issue_service.dart';
+import '../voice/audio_recorder.dart';
 import '../voice/tts.dart';
 import 'activity_feed.dart';
 import 'app_settings.dart';
@@ -32,7 +33,15 @@ const _seatOptions = <_SeatOption>[
 
 class JarvisScreen extends StatefulWidget {
   final String? startupError;
-  const JarvisScreen({super.key, this.startupError});
+  final GitHubIssueService? githubIssueService;
+  final PcmCapture? recorder;
+
+  const JarvisScreen({
+    super.key,
+    this.startupError,
+    this.githubIssueService,
+    this.recorder,
+  });
 
   @override
   State<JarvisScreen> createState() => _JarvisScreenState();
@@ -53,11 +62,18 @@ class _JarvisScreenState extends State<JarvisScreen> {
   bool _showWaveform = false;
   bool _spinnerStuck = false;
   int _selectionAttempts = 0;
+  bool _submittingIssue = false;
+  String? _issueUrl;
   bool _showSuccess = false;
+  bool _completingListening = false;
+  late final GitHubIssueService _githubIssueService;
+  late final PcmCapture _recorder;
 
   @override
   void initState() {
     super.initState();
+    _githubIssueService = widget.githubIssueService ?? GitHubIssueService();
+    _recorder = widget.recorder ?? PcmRecorder();
     if (widget.startupError != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
@@ -101,6 +117,8 @@ class _JarvisScreenState extends State<JarvisScreen> {
       if (_captureGranted &&
           _reportReady(chat.events) &&
           !_issueSubmitted(chat.events) &&
+          !_submittingIssue &&
+          _issueUrl == null &&
           !_autoSubmitting) {
         _autoSubmitting = true;
         Future<void>.microtask(_submitIssue);
@@ -124,8 +142,8 @@ class _JarvisScreenState extends State<JarvisScreen> {
       _showWaveform = false;
       _orb = OrbState.idle;
     });
-    await HapticFeedback.heavyImpact();
-    await SystemSound.play(SystemSoundType.click);
+    unawaited(HapticFeedback.heavyImpact());
+    unawaited(SystemSound.play(SystemSoundType.click));
   }
 
   bool _issueSubmitted(List<AgentEvent> events) {
@@ -166,6 +184,8 @@ class _JarvisScreenState extends State<JarvisScreen> {
   }
 
   double _progressValue(ChatController chat) {
+    if (_issueUrl != null) return 1;
+    if (_submittingIssue) return 0.94;
     if (_issueSubmitted(chat.events)) return 1;
     if (_hasToolResult(chat.events, 'create_github_issue')) return 0.94;
     if (_reportReady(chat.events)) return 0.76;
@@ -177,6 +197,8 @@ class _JarvisScreenState extends State<JarvisScreen> {
   }
 
   String _progressLabel(ChatController chat) {
+    if (_issueUrl != null) return 'GitHub issue created successfully.';
+    if (_submittingIssue) return 'Generating GitHub Issue...';
     if (_issueSubmitted(chat.events) ||
         _hasToolResult(chat.events, 'create_github_issue')) {
       return 'Generating GitHub Issue...';
@@ -190,9 +212,9 @@ class _JarvisScreenState extends State<JarvisScreen> {
     }
     if (_captureGranted || chat.running) return 'Analysing Network Logs...';
     if (_orb == OrbState.listening) {
-      return "I'm listening. Please retry the action now so I can capture the system state.";
+      return "I'm listening. Tell me what happened, then tap Finish Capture.";
     }
-    return 'Tap Activate Syndai Agent to capture the failure window.';
+    return 'Tap the mic to start talking to the agent.';
   }
 
   String _selectedSeatLabel() {
@@ -208,12 +230,13 @@ class _JarvisScreenState extends State<JarvisScreen> {
   void dispose() {
     _levelSub?.cancel();
     _chatRef?.removeListener(_onChatChanged);
+    _recorder.dispose();
     super.dispose();
   }
 
   Future<void> _onAgentTap() async {
-    final stt = context.read<SpeechToTextService>();
     final chat = context.read<ChatController>();
+    final messenger = ScaffoldMessenger.of(context);
 
     if (chat.running) {
       await chat.cancel();
@@ -226,172 +249,267 @@ class _JarvisScreenState extends State<JarvisScreen> {
     }
 
     if (_orb == OrbState.listening) {
-      await _stopListening();
-      if (!mounted) return;
-      setState(() {
-        _orb = OrbState.idle;
-        _showWaveform = false;
-      });
+      await _completeListeningAndAnalyze();
+      return;
+    }
+
+    if (chat.agent is MockAgentService) {
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Voice capture needs the on-device model to finish loading. Open Settings to confirm Gemma 4 is loaded.',
+          ),
+        ),
+      );
       return;
     }
 
     chat.clearSession();
     _autoSubmitting = false;
 
-    const greeting = 'Hello! How can I help you today?';
-    chat.greet(greeting);
-
-    final tts = context.read<TextToSpeechService>();
-    unawaited(tts.speak(greeting));
-
-    // Small delay so TTS can start before the mic opens.
-    await Future.delayed(const Duration(milliseconds: 300));
+    final started = await _recorder.startRecording();
     if (!mounted) return;
 
-    _levelSub = stt.soundLevel.listen((level) {
-      if (!mounted) return;
-      setState(() => _amplitude = level);
-    });
-    final messenger = ScaffoldMessenger.of(context);
-    final result = await stt.startListening(
-      onPartial: (partial) {
-        if (!mounted) return;
-        setState(() => _transcriptDraft = partial);
-      },
-    );
-    if (!mounted) return;
-
-    if (result == SttStartResult.started) {
+    if (!started) {
       setState(() {
-        _orb = OrbState.listening;
-        _showWaveform = true;
+        _amplitude = 0;
+        _orb = OrbState.idle;
+        _showWaveform = false;
         _captureGranted = false;
         _showSuccess = false;
+        _transcriptDraft = '';
       });
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('Microphone permission is disabled or unavailable.'),
+        ),
+      );
       return;
     }
 
-    await _levelSub?.cancel();
-    _levelSub = null;
+    _levelSub = _recorder.amplitude.listen((level) {
+      if (!mounted) return;
+      setState(() => _amplitude = level);
+    });
     setState(() {
-      _amplitude = 0;
       _orb = OrbState.listening;
       _showWaveform = true;
       _captureGranted = false;
       _showSuccess = false;
-      _transcriptDraft = _demoTranscript;
+      _transcriptDraft = 'Listening...';
     });
-    messenger.showSnackBar(
-      const SnackBar(
-        content: Text(
-          'Speech recognition is unavailable here. Using the scripted Warriors checkout report.',
-        ),
-      ),
-    );
   }
 
-  Future<String> _stopListening() async {
-    final stt = context.read<SpeechToTextService>();
-    final text = await stt.stopListening();
+  Future<void> _completeListeningAndAnalyze([String? _]) async {
+    if (_completingListening) return;
+    _completingListening = true;
+    try {
+      await _levelSub?.cancel();
+      _levelSub = null;
+      final pcm = await _recorder.stopAndGetPcm();
+      if (!mounted) return;
+
+      if (pcm == null || pcm.isEmpty) {
+        setState(() {
+          _amplitude = 0;
+          _orb = OrbState.idle;
+          _showWaveform = false;
+          _captureGranted = false;
+          _showSuccess = false;
+          _transcriptDraft = '';
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('No speech captured. Try again when you are ready.'),
+          ),
+        );
+        return;
+      }
+
+      final chat = context.read<ChatController>();
+      final transcript = (await chat.transcribe(pcm))?.trim() ?? '';
+      if (!mounted) return;
+
+      if (transcript.isEmpty) {
+        setState(() {
+          _amplitude = 0;
+          _orb = OrbState.idle;
+          _showWaveform = false;
+          _captureGranted = false;
+          _showSuccess = false;
+          _transcriptDraft = '';
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Could not transcribe that. Try again and speak a bit longer.',
+            ),
+          ),
+        );
+        return;
+      }
+
+      setState(() {
+        _amplitude = 0;
+        _orb = OrbState.thinking;
+        _showWaveform = false;
+        _captureGranted = false;
+        _showSuccess = false;
+        _transcriptDraft = transcript;
+      });
+      await _runAgentAnalysis(transcript);
+    } finally {
+      _completingListening = false;
+    }
+  }
+
+  Future<void> _cancelListening() async {
+    await _recorder.cancel();
     await _levelSub?.cancel();
     _levelSub = null;
-    if (!mounted) return _demoTranscript;
-    final transcript = text.trim().isEmpty ? _demoTranscript : text.trim();
+    if (!mounted) return;
     setState(() {
       _amplitude = 0;
-      _transcriptDraft = transcript;
+      _orb = OrbState.idle;
+      _showWaveform = false;
+      _transcriptDraft = '';
     });
-    return transcript;
+  }
+
+  Future<void> _runAgentAnalysis(String transcript) async {
+    final chat = context.read<ChatController>();
+    _wasRunning = true;
+    if (mounted) {
+      setState(() {
+        _captureGranted = true;
+        _orb = OrbState.thinking;
+      });
+    }
+    await chat.send(
+      'Analyze this Ticketmaster checkout failure and prepare a GitHub-ready bug report.\n'
+      'Transcript: $transcript\n'
+      'Device Info: $_demoDeviceInfo\n'
+      'The Log: $_demoLog\n'
+      'Selected Seat: ${_selectedSeatLabel()}\n'
+      'Observed Behavior: The list item enters a spinner state and never transitions into checkout.\n'
+      'Expected Behavior: Selecting the ticket should open checkout immediately.',
+    );
   }
 
   Future<void> _onSeatTap(_SeatOption seat) async {
     setState(() {
       _selectedSeatId = seat.id;
-      _spinnerStuck = seat.highlighted;
       _selectionAttempts += 1;
     });
 
-    if (!seat.highlighted) return;
-    if (_orb != OrbState.listening || _captureGranted) return;
-
-    final transcript = await _stopListening();
     if (!mounted) return;
-    await _promptForConsent(transcript);
-  }
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => _CheckoutPage(
+          seat: seat,
+          onAgentActivate: () async {
+            // Triggers agent from checkout page — pops first then activates
+            if (mounted) await _onAgentTap();
+          },
+        ),
+      ),
+    );
 
-  Future<void> _promptForConsent(String transcript) async {
-    final approved =
-        await showCupertinoDialog<bool>(
-          context: context,
-          builder: (context) => CupertinoAlertDialog(
-            title: const Text(
-              'Allow Agent to record screen and network logs for this session?',
-            ),
-            content: const Padding(
-              padding: EdgeInsets.only(top: 10),
-              child: Text(
-                'We only record the failure window so engineering can diagnose the checkout hang.',
-              ),
-            ),
-            actions: [
-              CupertinoDialogAction(
-                onPressed: () => Navigator.of(context).pop(false),
-                child: const Text('Not Now'),
-              ),
-              CupertinoDialogAction(
-                isDefaultAction: true,
-                onPressed: () => Navigator.of(context).pop(true),
-                child: const Text('Allow & Record'),
-              ),
-            ],
-          ),
-        ) ??
-        false;
-    if (!approved || !mounted) {
-      setState(() {
-        _orb = OrbState.idle;
-        _showWaveform = false;
-      });
-      return;
+    // After returning from checkout, mark spinner stuck if it was the featured seat
+    if (seat.highlighted && mounted) {
+      setState(() => _spinnerStuck = true);
     }
-
-    final chat = context.read<ChatController>();
-    chat.clearSession();
-    _autoSubmitting = false;
-    _wasRunning = true;
-    setState(() {
-      _captureGranted = true;
-      _showWaveform = true;
-      _showSuccess = false;
-      _issueId = 'GSU-882';
-      _orb = OrbState.thinking;
-      _transcriptDraft = transcript.trim().isEmpty
-          ? _demoTranscript
-          : transcript;
-    });
-    await chat.send(_buildDiagnosisPrompt(_transcriptDraft));
-  }
-
-  String _buildDiagnosisPrompt(String transcript) {
-    return 'Customer is trying to buy Golden State Warriors vs. LA Lakers tickets. '
-        'The highlighted seat is ${_selectedSeatLabel()} and the list item shimmers forever instead of navigating to checkout. '
-        'Transcript: "$transcript". '
-        'Please capture the failure, analyze the network timeout, generate the bug report, and prepare to push the issue to GitHub.';
   }
 
   Future<void> _submitIssue() async {
     final chat = context.read<ChatController>();
-    if (chat.running || _issueSubmitted(chat.events)) return;
-    _wasRunning = true;
-    setState(() => _orb = OrbState.thinking);
-    await chat.send(
-      'Push the GitHub issue now. '
-      'Issue title should mention the Warriors checkout hang for ${_selectedSeatLabel()}. '
-      'The GitHub Issue body must include:\n'
-      'Transcript: ${_transcriptDraft.isEmpty ? _demoTranscript : _transcriptDraft}\n'
-      'Device Info: $_demoDeviceInfo\n'
-      'The Log: $_demoLog',
-    );
+    if (chat.running || _issueSubmitted(chat.events) || _submittingIssue) {
+      return;
+    }
+
+    if (!_githubIssueService.isReady) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(_githubIssueService.readinessMessage)),
+      );
+      return;
+    }
+
+    setState(() {
+      _submittingIssue = true;
+      _orb = OrbState.thinking;
+    });
+
+    final title = 'Warriors checkout hangs for ${_selectedSeatLabel()}';
+    final body = _buildGitHubIssueBody();
+    final labels = ['bug', 'demo', 'warriors-checkout'];
+
+    try {
+      final submission = await _githubIssueService.submit(
+        GitHubIssueRequest(title: title, body: body, labels: labels),
+      );
+      if (!mounted) return;
+      setState(() {
+        _issueUrl = submission.url;
+        _issueId = submission.issueNumber ?? _issueId;
+        _submittingIssue = false;
+      });
+      await _triggerSuccessState();
+    } on GitHubIssueFailure catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _submittingIssue = false;
+        _orb = OrbState.idle;
+      });
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(e.message)));
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _submittingIssue = false;
+        _orb = OrbState.idle;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('GitHub issue creation failed: $e')),
+      );
+    }
+  }
+
+  @visibleForTesting
+  Future<void> submitIssueForTest() => _submitIssue();
+
+  @visibleForTesting
+  Future<void> finishCaptureForTest() => _completeListeningAndAnalyze();
+
+  String _buildGitHubIssueBody() {
+    final transcript = _transcriptDraft.isEmpty
+        ? _demoTranscript
+        : _transcriptDraft;
+    return '''
+## Syndai Bug Report
+
+**Title context:** Warriors checkout hang for ${_selectedSeatLabel()}
+
+**Transcript:**  
+$transcript
+
+**Device Info:**  
+$_demoDeviceInfo
+
+**The Log:**  
+```json
+$_demoLog
+```
+
+**Selected Seat:**  
+${_selectedSeatLabel()}
+
+**Observed Behavior:**  
+The list item enters a spinner state and never transitions into checkout.
+
+**Expected Behavior:**  
+Selecting the ticket should open checkout immediately.
+''';
   }
 
   void _resetDemo() {
@@ -408,6 +526,8 @@ class _JarvisScreenState extends State<JarvisScreen> {
       _showWaveform = false;
       _spinnerStuck = false;
       _selectionAttempts = 0;
+      _submittingIssue = false;
+      _issueUrl = null;
       _showSuccess = false;
     });
   }
@@ -438,6 +558,10 @@ class _JarvisScreenState extends State<JarvisScreen> {
                         attempts: _selectionAttempts,
                         spinnerStuck: _spinnerStuck,
                       ),
+                      if (!_githubIssueService.isReady)
+                        _GitHubReadinessBanner(
+                          message: _githubIssueService.readinessMessage,
+                        ),
                       Container(
                         width: double.infinity,
                         color: Colors.white,
@@ -489,6 +613,8 @@ class _JarvisScreenState extends State<JarvisScreen> {
             _WaveformSheet(
               visible: _showWaveform && !_captureGranted && !_showSuccess,
               amplitude: _amplitude,
+              onFinish: _completeListeningAndAnalyze,
+              onCancel: _cancelListening,
             ),
             if (_showSuccess)
               Positioned.fill(
@@ -516,6 +642,37 @@ class _SeatOption {
     this.price, {
     this.highlighted = false,
   });
+}
+
+class _GitHubReadinessBanner extends StatelessWidget {
+  final String message;
+
+  const _GitHubReadinessBanner({required this.message});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      color: const Color(0xFFFDE68A),
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
+      child: Row(
+        children: [
+          const Icon(Icons.warning_amber_rounded, color: Color(0xFF92400E)),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              message,
+              style: const TextStyle(
+                color: Color(0xFF78350F),
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class _ReferenceTopBar extends StatelessWidget {
@@ -560,7 +717,10 @@ class _ReferenceTopBar extends StatelessWidget {
                 ),
                 const SizedBox(width: 6),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 5,
+                    vertical: 2,
+                  ),
                   decoration: BoxDecoration(
                     color: const Color(0xFF026CDF),
                     borderRadius: BorderRadius.circular(3),
@@ -691,7 +851,10 @@ class _VenueMapStrip extends StatelessWidget {
                   borderRadius: BorderRadius.circular(999),
                   border: Border.all(color: const Color(0xFFD1D5DB)),
                 ),
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 8,
+                ),
                 child: const Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
@@ -800,10 +963,7 @@ class _FilterRail extends StatelessWidget {
   final int attempts;
   final bool spinnerStuck;
 
-  const _FilterRail({
-    required this.attempts,
-    required this.spinnerStuck,
-  });
+  const _FilterRail({required this.attempts, required this.spinnerStuck});
 
   @override
   Widget build(BuildContext context) {
@@ -939,21 +1099,6 @@ class _SeatTile extends StatelessWidget {
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Container(
-                width: 42,
-                height: 42,
-                decoration: BoxDecoration(
-                  color: const Color(0xFFF3F4F6),
-                  shape: BoxShape.circle,
-                  border: Border.all(color: const Color(0xFFD1D5DB)),
-                ),
-                child: const Icon(
-                  Icons.location_on_outlined,
-                  size: 20,
-                  color: Color(0xFF6B7280),
-                ),
-              ),
-              const SizedBox(width: 12),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -992,8 +1137,8 @@ class _SeatTile extends StatelessWidget {
                       loading
                           ? 'Checkout is stuck on a spinner after seat selection.'
                           : (seat.highlighted
-                              ? 'VIP LOUNGE PACKAGE'
-                              : 'Verified Resale Ticket'),
+                                ? 'VIP LOUNGE PACKAGE'
+                                : 'Verified Resale Ticket'),
                       style: const TextStyle(
                         color: Color(0xFF6B7280),
                         fontSize: 14,
@@ -1094,10 +1239,7 @@ class _StatusCard extends StatelessWidget {
                 ),
                 child: Text(
                   'Transcript: $transcript',
-                  style: const TextStyle(
-                    color: Color(0xFF374151),
-                    height: 1.4,
-                  ),
+                  style: const TextStyle(color: Color(0xFF374151), height: 1.4),
                 ),
               ),
             if (events.isNotEmpty) ...[
@@ -1106,6 +1248,880 @@ class _StatusCard extends StatelessWidget {
             ],
           ],
         ),
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Checkout page
+// ---------------------------------------------------------------------------
+
+enum _AgentPhase { idle, listening, confirming, requesting }
+
+class _CheckoutPage extends StatefulWidget {
+  final _SeatOption seat;
+  final VoidCallback onAgentActivate;
+
+  const _CheckoutPage({required this.seat, required this.onAgentActivate});
+
+  @override
+  State<_CheckoutPage> createState() => _CheckoutPageState();
+}
+
+class _CheckoutPageState extends State<_CheckoutPage> {
+  bool _buying = false;
+  _AgentPhase _phase = _AgentPhase.idle;
+  String _partial = '';
+  String _confirmed = '';
+  double _amplitude = 0;
+  bool _recordingStarted = false;
+  StreamSubscription<double>? _levelSub;
+  final PcmRecorder _recorder = PcmRecorder();
+
+  // ── Buy flow ──────────────────────────────────────────────────────────────
+
+  Future<void> _onBuyTap() async {
+    if (_buying) return;
+    setState(() => _buying = true);
+    await Future.delayed(const Duration(seconds: 3));
+    if (!mounted) return;
+    setState(() => _buying = false);
+    await showDialog<void>(
+      context: context,
+      builder: (_) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text(
+          'Error',
+          style: TextStyle(fontWeight: FontWeight.w800),
+        ),
+        content: const Text('Something went wrong. Please try again.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── Agent flow ────────────────────────────────────────────────────────────
+
+  Future<void> _startListening() async {
+    final tts = context.read<TextToSpeechService>();
+    setState(() {
+      _phase = _AgentPhase.listening;
+      _partial = '';
+      _recordingStarted = false;
+    });
+
+    // Start recording immediately so TTS audio doesn't block it.
+    // Speak greeting in parallel — recording captures after TTS finishes.
+    final started = await _recorder.startRecording();
+    if (!mounted) return;
+
+    if (!started) {
+      setState(() {
+        _confirmed = _demoTranscript;
+        _phase = _AgentPhase.confirming;
+      });
+      return;
+    }
+
+    setState(() => _recordingStarted = true);
+    _levelSub = _recorder.amplitude.listen((level) {
+      if (mounted) setState(() => _amplitude = level);
+    });
+
+    unawaited(tts.speak("Hi, I'm Syndai. Tell me what went wrong."));
+  }
+
+  Future<void> _stopListening() async {
+    if (!_recordingStarted) return;
+    await _levelSub?.cancel();
+    _levelSub = null;
+
+    if (mounted) {
+      setState(() {
+        _amplitude = 0;
+        _confirmed = 'Transcribing...';
+        _phase = _AgentPhase.confirming;
+      });
+    }
+
+    final pcm = await _recorder.stopAndGetPcm();
+    if (!mounted) return;
+
+    if (pcm == null || pcm.isEmpty) {
+      setState(() => _confirmed = _demoTranscript);
+      return;
+    }
+
+    final chat = context.read<ChatController>();
+    final result = await chat.transcribe(pcm);
+    if (!mounted) return;
+
+    setState(() {
+      _confirmed = (result == null || result.trim().isEmpty)
+          ? _demoTranscript
+          : result.trim();
+    });
+  }
+
+  void _onConfirm() => setState(() => _phase = _AgentPhase.requesting);
+
+  void _onRetake() {
+    setState(() {
+      _phase = _AgentPhase.idle;
+      _partial = '';
+      _confirmed = '';
+      _recordingStarted = false;
+    });
+  }
+
+  void _onAllow() {
+    Navigator.of(context).pop();
+    widget.onAgentActivate();
+  }
+
+  void _onDismiss() {
+    _levelSub?.cancel();
+    _levelSub = null;
+    _recorder.cancel();
+    setState(() {
+      _phase = _AgentPhase.idle;
+      _partial = '';
+      _confirmed = '';
+      _amplitude = 0;
+      _recordingStarted = false;
+    });
+  }
+
+  @override
+  void dispose() {
+    _levelSub?.cancel();
+    _recorder.dispose();
+    super.dispose();
+  }
+
+  // ── Build ─────────────────────────────────────────────────────────────────
+
+  @override
+  Widget build(BuildContext context) {
+    final seat = widget.seat;
+    final panelVisible = _phase != _AgentPhase.idle;
+
+    return Scaffold(
+      backgroundColor: const Color(0xFFF3F4F6),
+      body: SafeArea(
+        child: Stack(
+          children: [
+            // ── Main checkout content ────────────────────────────────────
+            Column(
+              children: [
+                _CheckoutTopBar(onBack: () => Navigator.of(context).pop()),
+                Expanded(
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // Event card
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(18),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(color: const Color(0xFFE5E7EB)),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text(
+                                'Golden State Warriors vs. LA Lakers',
+                                style: TextStyle(
+                                  color: Color(0xFF111827),
+                                  fontWeight: FontWeight.w800,
+                                  fontSize: 17,
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              const Text(
+                                'Sat • 8:00 PM • Chase Center',
+                                style: TextStyle(
+                                  color: Color(0xFF6B7280),
+                                  fontSize: 13,
+                                ),
+                              ),
+                              const Divider(height: 24),
+                              Row(
+                                children: [
+                                  const Icon(
+                                    Icons.location_on_outlined,
+                                    size: 18,
+                                    color: Color(0xFF6B7280),
+                                  ),
+                                  const SizedBox(width: 6),
+                                  Text(
+                                    seat.label,
+                                    style: const TextStyle(
+                                      color: Color(0xFF111827),
+                                      fontWeight: FontWeight.w700,
+                                      fontSize: 15,
+                                    ),
+                                  ),
+                                  const Spacer(),
+                                  Text(
+                                    seat.price,
+                                    style: const TextStyle(
+                                      color: Color(0xFF2563EB),
+                                      fontWeight: FontWeight.w800,
+                                      fontSize: 18,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 14),
+                        // Order summary
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(18),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(color: const Color(0xFFE5E7EB)),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text(
+                                'Order Summary',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.w800,
+                                  fontSize: 15,
+                                ),
+                              ),
+                              const SizedBox(height: 14),
+                              _OrderRow(
+                                label: '1x Ticket (${seat.label})',
+                                value: seat.price,
+                              ),
+                              const _OrderRow(
+                                label: 'Service fee',
+                                value: '\$18.50',
+                              ),
+                              const _OrderRow(
+                                label: 'Facility charge',
+                                value: '\$5.00',
+                              ),
+                              const Divider(height: 20),
+                              _OrderRow(
+                                label: 'Total',
+                                value: _totalPrice(seat.price),
+                                bold: true,
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 20),
+                        // Buy button
+                        SizedBox(
+                          width: double.infinity,
+                          height: 54,
+                          child: ElevatedButton(
+                            onPressed: _buying ? null : _onBuyTap,
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: const Color(0xFF026CDF),
+                              disabledBackgroundColor: const Color(0xFF026CDF),
+                              foregroundColor: Colors.white,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(999),
+                              ),
+                            ),
+                            child: _buying
+                                ? const SizedBox(
+                                    width: 26,
+                                    height: 26,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 3,
+                                      color: Colors.white54,
+                                    ),
+                                  )
+                                : const Text(
+                                    'Buy Now',
+                                    style: TextStyle(
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                  ),
+                          ),
+                        ),
+                        const SizedBox(height: 100),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+
+            // ── Syndai Agent FAB (hidden while panel is open) ────────────
+            if (!panelVisible)
+              Positioned(
+                bottom: 24,
+                right: 16,
+                child: _ActivateBar(
+                  listening: false,
+                  running: false,
+                  onTap: _startListening,
+                ),
+              ),
+
+            // ── Agent panel ───────────────────────────────────────────────
+            AnimatedPositioned(
+              duration: const Duration(milliseconds: 320),
+              curve: Curves.easeOutCubic,
+              left: 0,
+              right: 0,
+              bottom: panelVisible ? 0 : -420,
+              child: _AgentPanel(
+                phase: _phase,
+                partial: _partial,
+                confirmed: _confirmed,
+                amplitude: _amplitude,
+                recordingStarted: _recordingStarted,
+                onStop: _stopListening,
+                onConfirm: _onConfirm,
+                onRetake: _onRetake,
+                onAllow: _onAllow,
+                onDismiss: _onDismiss,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _totalPrice(String price) {
+    final raw =
+        double.tryParse(price.replaceAll('\$', '').replaceAll(',', '')) ?? 0;
+    return '\$${(raw + 23.50).toStringAsFixed(2)}';
+  }
+}
+
+class _CheckoutTopBar extends StatelessWidget {
+  final VoidCallback onBack;
+  const _CheckoutTopBar({required this.onBack});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      color: const Color(0xFF111111),
+      padding: const EdgeInsets.fromLTRB(12, 14, 12, 14),
+      child: Row(
+        children: [
+          GestureDetector(
+            onTap: onBack,
+            child: const CircleAvatar(
+              radius: 17,
+              backgroundColor: Color(0xFF232323),
+              child: Icon(Icons.arrow_back, color: Colors.white, size: 18),
+            ),
+          ),
+          const SizedBox(width: 12),
+          RichText(
+            text: const TextSpan(
+              children: [
+                TextSpan(
+                  text: 'ticket',
+                  style: TextStyle(
+                    color: Color(0xFF026CDF),
+                    fontSize: 15,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+                TextSpan(
+                  text: 'master',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Agent bottom panel ────────────────────────────────────────────────────────
+
+class _AgentPanel extends StatelessWidget {
+  final _AgentPhase phase;
+  final String partial;
+  final String confirmed;
+  final double amplitude;
+  final bool recordingStarted;
+  final VoidCallback onStop;
+  final VoidCallback onConfirm;
+  final VoidCallback onRetake;
+  final VoidCallback onAllow;
+  final VoidCallback onDismiss;
+
+  const _AgentPanel({
+    required this.phase,
+    required this.partial,
+    required this.confirmed,
+    required this.amplitude,
+    required this.recordingStarted,
+    required this.onStop,
+    required this.onConfirm,
+    required this.onRetake,
+    required this.onAllow,
+    required this.onDismiss,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: const BoxDecoration(
+        color: Color(0xFF0F172A),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black45,
+            blurRadius: 32,
+            offset: Offset(0, -4),
+          ),
+        ],
+      ),
+      padding: const EdgeInsets.fromLTRB(24, 14, 24, 36),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Drag handle
+          Container(
+            width: 40,
+            height: 4,
+            decoration: BoxDecoration(
+              color: Colors.white24,
+              borderRadius: BorderRadius.circular(999),
+            ),
+          ),
+          const SizedBox(height: 22),
+          if (phase == _AgentPhase.listening)
+            _ListeningContent(
+              partial: partial,
+              amplitude: amplitude,
+              recordingStarted: recordingStarted,
+              onStop: onStop,
+              onDismiss: onDismiss,
+            ),
+          if (phase == _AgentPhase.confirming)
+            _ConfirmingContent(
+              confirmed: confirmed,
+              onConfirm: onConfirm,
+              onRetake: onRetake,
+            ),
+          if (phase == _AgentPhase.requesting)
+            _RequestingContent(onAllow: onAllow, onDismiss: onDismiss),
+        ],
+      ),
+    );
+  }
+}
+
+class _ListeningContent extends StatelessWidget {
+  final String partial;
+  final double amplitude;
+  final bool recordingStarted;
+  final VoidCallback onStop;
+  final VoidCallback onDismiss;
+
+  const _ListeningContent({
+    required this.partial,
+    required this.amplitude,
+    required this.recordingStarted,
+    required this.onStop,
+    required this.onDismiss,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Container(
+              width: 10,
+              height: 10,
+              decoration: const BoxDecoration(
+                color: Color(0xFF22C55E),
+                shape: BoxShape.circle,
+              ),
+            ),
+            const SizedBox(width: 8),
+            const Text(
+              'Listening...',
+              style: TextStyle(color: Colors.white70, fontSize: 13),
+            ),
+            const Spacer(),
+            GestureDetector(
+              onTap: onDismiss,
+              child: const Icon(Icons.close, color: Colors.white38, size: 20),
+            ),
+          ],
+        ),
+        const SizedBox(height: 14),
+        // Greeting
+        const Text(
+          "Hi, I'm Syndai. Tell me what went wrong.",
+          style: TextStyle(
+            color: Colors.white,
+            fontWeight: FontWeight.w700,
+            fontSize: 16,
+            height: 1.4,
+          ),
+        ),
+        const SizedBox(height: 14),
+        _LiveWaveformBars(amplitude: amplitude),
+        const SizedBox(height: 14),
+        // Live transcript — current line only
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.06),
+            borderRadius: BorderRadius.circular(14),
+          ),
+          child: Text(
+            partial.isEmpty ? 'Speak now...' : partial,
+            style: TextStyle(
+              color: partial.isEmpty ? Colors.white24 : Colors.white,
+              fontSize: 15,
+              height: 1.4,
+            ),
+          ),
+        ),
+        const SizedBox(height: 20),
+        SizedBox(
+          width: double.infinity,
+          child: ElevatedButton(
+            onPressed: recordingStarted ? onStop : null,
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF16A34A),
+              disabledBackgroundColor: const Color(0xFF16A34A).withValues(alpha: 0.4),
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(vertical: 14),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(999),
+              ),
+            ),
+            child: recordingStarted
+                ? const Text(
+                    'Done',
+                    style: TextStyle(fontWeight: FontWeight.w800, fontSize: 15),
+                  )
+                : const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Colors.white54,
+                    ),
+                  ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ConfirmingContent extends StatelessWidget {
+  final String confirmed;
+  final VoidCallback onConfirm;
+  final VoidCallback onRetake;
+
+  const _ConfirmingContent({
+    required this.confirmed,
+    required this.onConfirm,
+    required this.onRetake,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Does this sound right?',
+          style: TextStyle(
+            color: Colors.white,
+            fontWeight: FontWeight.w800,
+            fontSize: 17,
+          ),
+        ),
+        const SizedBox(height: 14),
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.06),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: Colors.white12),
+          ),
+          child: Text(
+            confirmed,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 15,
+              height: 1.5,
+            ),
+          ),
+        ),
+        const SizedBox(height: 20),
+        Row(
+          children: [
+            Expanded(
+              child: OutlinedButton(
+                onPressed: onRetake,
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: Colors.white70,
+                  side: const BorderSide(color: Colors.white24),
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                ),
+                child: const Text(
+                  'Retake',
+                  style: TextStyle(fontWeight: FontWeight.w700),
+                ),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: ElevatedButton(
+                onPressed: onConfirm,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF16A34A),
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                ),
+                child: const Text(
+                  'Confirm',
+                  style: TextStyle(fontWeight: FontWeight.w800),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class _RequestingContent extends StatelessWidget {
+  final VoidCallback onAllow;
+  final VoidCallback onDismiss;
+
+  const _RequestingContent({required this.onAllow, required this.onDismiss});
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Recreate the problem',
+          style: TextStyle(
+            color: Colors.white,
+            fontWeight: FontWeight.w800,
+            fontSize: 17,
+          ),
+        ),
+        const SizedBox(height: 10),
+        const Text(
+          'Tap Buy Now again so Syndai can capture the exact failure. We\'ll record your screen and network activity only during this window.',
+          style: TextStyle(color: Colors.white70, fontSize: 14, height: 1.5),
+        ),
+        const SizedBox(height: 20),
+        Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: const Color(0xFF1E293B),
+            borderRadius: BorderRadius.circular(14),
+          ),
+          child: const Row(
+            children: [
+              Icon(Icons.lock_outline, color: Color(0xFF94A3B8), size: 16),
+              SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Screen + network logs · deleted after report is filed',
+                  style: TextStyle(color: Color(0xFF94A3B8), fontSize: 12),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 20),
+        Row(
+          children: [
+            Expanded(
+              child: OutlinedButton(
+                onPressed: onDismiss,
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: Colors.white70,
+                  side: const BorderSide(color: Colors.white24),
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                ),
+                child: const Text(
+                  'Not Now',
+                  style: TextStyle(fontWeight: FontWeight.w700),
+                ),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: ElevatedButton(
+                onPressed: onAllow,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF026CDF),
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                ),
+                child: const Text(
+                  'Allow & Record',
+                  style: TextStyle(fontWeight: FontWeight.w800),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class _LiveWaveformBars extends StatefulWidget {
+  final double amplitude;
+  const _LiveWaveformBars({required this.amplitude});
+
+  @override
+  State<_LiveWaveformBars> createState() => _LiveWaveformBarsState();
+}
+
+class _LiveWaveformBarsState extends State<_LiveWaveformBars>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _ctrl,
+      builder: (context, _) {
+        return Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: List.generate(16, (i) {
+            final phase = (_ctrl.value * math.pi * 2) + i * 0.45;
+            final swing = (math.sin(phase) + 1) / 2;
+            final amp = widget.amplitude.clamp(0.08, 1.0);
+            final h = 10.0 + swing * 28 + amp * 18;
+            return Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 2.5),
+              child: Container(
+                width: 4,
+                height: h,
+                decoration: BoxDecoration(
+                  color: Color.lerp(
+                    const Color(0xFF22C55E),
+                    const Color(0xFF4ADE80),
+                    swing,
+                  ),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+              ),
+            );
+          }),
+        );
+      },
+    );
+  }
+}
+
+class _OrderRow extends StatelessWidget {
+  final String label;
+  final String value;
+  final bool bold;
+
+  const _OrderRow({
+    required this.label,
+    required this.value,
+    this.bold = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        children: [
+          Text(
+            label,
+            style: TextStyle(
+              color: bold ? const Color(0xFF111827) : const Color(0xFF6B7280),
+              fontWeight: bold ? FontWeight.w800 : FontWeight.w500,
+              fontSize: bold ? 15 : 14,
+            ),
+          ),
+          const Spacer(),
+          Text(
+            value,
+            style: TextStyle(
+              color: bold ? const Color(0xFF111827) : const Color(0xFF374151),
+              fontWeight: bold ? FontWeight.w800 : FontWeight.w600,
+              fontSize: bold ? 15 : 14,
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -1159,12 +2175,24 @@ class _ActivateBar extends StatelessWidget {
 class _WaveformSheet extends StatelessWidget {
   final bool visible;
   final double amplitude;
+  final Future<void> Function() onFinish;
+  final Future<void> Function() onCancel;
 
-  const _WaveformSheet({required this.visible, required this.amplitude});
+  const _WaveformSheet({
+    required this.visible,
+    required this.amplitude,
+    required this.onFinish,
+    required this.onCancel,
+  });
 
   @override
   Widget build(BuildContext context) {
-    final height = math.max(180.0, MediaQuery.of(context).size.height * 0.2);
+    final screenHeight = MediaQuery.of(context).size.height;
+    final height = math.min(
+      math.max(260.0, screenHeight * 0.28),
+      screenHeight * 0.42,
+    );
+    final bottomInset = MediaQuery.of(context).padding.bottom;
     return Positioned(
       left: 0,
       right: 0,
@@ -1191,34 +2219,66 @@ class _WaveformSheet extends StatelessWidget {
                 top: Radius.circular(32),
               ),
             ),
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(24, 18, 24, 24),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Container(
-                    width: 56,
-                    height: 6,
-                    decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.24),
-                      borderRadius: BorderRadius.circular(999),
+            child: SafeArea(
+              top: false,
+              child: Padding(
+                padding: EdgeInsets.fromLTRB(24, 18, 24, 24 + bottomInset),
+                child: Column(
+                  children: [
+                    Container(
+                      width: 56,
+                      height: 6,
+                      decoration: BoxDecoration(
+                        color: Colors.white.withValues(alpha: 0.24),
+                        borderRadius: BorderRadius.circular(999),
+                      ),
                     ),
-                  ),
-                  const SizedBox(height: 18),
-                  const Text(
-                    "I'm listening. Please retry the action now so I can capture the system state.",
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.w700,
-                      height: 1.35,
+                    const SizedBox(height: 18),
+                    const Text(
+                      "I'm listening. Tell me what happened, then tap Finish Capture.",
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w700,
+                        height: 1.35,
+                      ),
                     ),
-                  ),
-                  const SizedBox(height: 18),
-                  Expanded(
-                    child: Center(child: _WaveformBars(amplitude: amplitude)),
-                  ),
-                ],
+                    const SizedBox(height: 18),
+                    Expanded(
+                      child: Center(child: _WaveformBars(amplitude: amplitude)),
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton(
+                            onPressed: onCancel,
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: Colors.white,
+                              side: BorderSide(
+                                color: Colors.white.withValues(alpha: 0.28),
+                              ),
+                              padding: const EdgeInsets.symmetric(vertical: 14),
+                            ),
+                            child: const Text('Cancel'),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: FilledButton(
+                            onPressed: onFinish,
+                            style: FilledButton.styleFrom(
+                              backgroundColor: const Color(0xFF38BDF8),
+                              foregroundColor: const Color(0xFF082F49),
+                              padding: const EdgeInsets.symmetric(vertical: 14),
+                            ),
+                            child: const Text('Finish Capture'),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
               ),
             ),
           ),

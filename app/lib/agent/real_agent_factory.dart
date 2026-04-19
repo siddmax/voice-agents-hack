@@ -1,3 +1,6 @@
+import '../sdk/github_client.dart';
+import '../sdk/github_config.dart';
+import 'github_issue_tools.dart';
 import '../cactus/engine.dart';
 import '../mcp/mcp_config.dart';
 import '../mcp/mcp_registry.dart';
@@ -24,6 +27,17 @@ class RealAgentFactory {
       await memory.refreshInjectedCache();
       final toolResults = ToolResultStore();
       final toolRegistry = ToolRegistry();
+      final githubConfig = GitHubConfig.fromEnvironment();
+      if (githubConfig != null) {
+        registerGitHubIssueTools(
+          toolRegistry,
+          github: GitHubClient(
+            owner: githubConfig.owner,
+            repo: githubConfig.repo,
+            token: githubConfig.token,
+          ),
+        );
+      }
       final assembler = PromptAssembler(
         todos: todos,
         readMemory: memory.readAll,

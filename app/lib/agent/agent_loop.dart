@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
 import '../cactus/engine.dart';
 import 'agent_service.dart';
@@ -145,6 +146,24 @@ class AgentLoop implements AgentService {
   @override
   Future<void> cancel() async {
     _cancelled = true;
+  }
+
+  @override
+  Future<String?> transcribe(Uint8List pcm) async {
+    try {
+      final raw = await engine.completeRaw(
+        messages: [
+          {'role': 'user', 'content': 'Transcribe the audio exactly as spoken. Reply with only the transcribed words.'},
+        ],
+        pcmData: pcm,
+        maxTokens: 256,
+        temperature: 0.0,
+      );
+      final trimmed = raw.trim();
+      return trimmed.isEmpty ? null : trimmed;
+    } catch (_) {
+      return null;
+    }
   }
 
   int get gateTriggerCount => _semanticGate.triggerCount;

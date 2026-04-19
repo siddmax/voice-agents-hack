@@ -2,6 +2,7 @@
 // builds the real loop. Lane C implements RealAgentService and it swaps
 // in at integration time.
 import 'dart:async';
+import 'dart:typed_data';
 
 /// A single streamed event from the agent loop. The UI renders these in order.
 sealed class AgentEvent {
@@ -67,4 +68,5 @@ enum TodoStatus { pending, inProgress, completed }
 abstract class AgentService {
   Stream<AgentEvent> run(String userInput);
   Future<void> cancel();
+  Future<String?> transcribe(Uint8List pcm);
 }
