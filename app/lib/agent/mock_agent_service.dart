@@ -11,54 +11,90 @@ class MockAgentService implements AgentService {
     _cancelled = false;
     final controller = StreamController<AgentEvent>();
     _controller = controller;
-    _drive(userInput, controller);
+    if (userInput.toLowerCase().contains('github')) {
+      _driveSubmission(controller);
+    } else {
+      _driveDiagnosis(userInput, controller);
+    }
     return controller.stream;
   }
 
-  Future<void> _drive(
-      String userInput, StreamController<AgentEvent> controller) async {
+  Future<void> _driveDiagnosis(
+    String userInput,
+    StreamController<AgentEvent> controller,
+  ) async {
     try {
-      final opener =
-          'Looking into "${userInput.trim().isEmpty ? "that" : userInput.trim()}" '
-          'for you. ';
-      for (final tok in _tokenize(opener)) {
-        if (_cancelled) return;
-        await Future.delayed(const Duration(milliseconds: 380));
-        controller.add(AgentToken(tok));
-      }
+      controller.add(const AgentThinking(activeTodo: 'capturing repro context'));
+      await _emitTokens(
+        'I heard a checkout failure in Section 102. '
+        'Drop-Guard is correlating your voice report with the live seat-lock path now.',
+        controller,
+      );
 
       if (_cancelled) return;
-      await Future.delayed(const Duration(milliseconds: 250));
       controller.add(const AgentToolCall(
-        'search_linear_issues',
-        {'query': 'open bugs assigned to me', 'limit': 5},
+        'prepare_bug_intake',
+        {'product_area': 'Checkout', 'surface': 'Seat map'},
       ));
-
-      await Future.delayed(const Duration(milliseconds: 700));
-      if (_cancelled) return;
+      await _wait(420);
       controller.add(const AgentToolResult(
-        'search_linear_issues',
-        '3 open issues found: LIN-412, LIN-418, LIN-421.',
+        'prepare_bug_intake',
+        'Intent mapped to checkout hang in Section 102 with repeated Add to Cart attempts.',
       ));
 
-      if (_cancelled) return;
+      controller.add(const AgentToolCall(
+        'start_repro_capture',
+        {'surface': 'seat_map', 'mode': 'screen+logs'},
+      ));
+      await _wait(380);
+      controller.add(const AgentToolResult(
+        'start_repro_capture',
+        'Screen recording, narration transcript, and session markers are live.',
+      ));
+
+      controller.add(const AgentToolCall(
+        'inspect_network_failures',
+        {'client': 'dio', 'focus': 'seat lock'},
+      ));
+      await _wait(640);
+      controller.add(const AgentToolResult(
+        'inspect_network_failures',
+        '[DioError] 409: Conflict - Seat_Lock_Timeout',
+      ));
+
+      controller.add(const AgentToolCall(
+        'map_trace_location',
+        {'signal': 'Seat_Lock_Timeout'},
+      ));
+      await _wait(300);
+      controller.add(const AgentToolResult(
+        'map_trace_location',
+        'lib/logic/cart_provider.dart:88',
+      ));
+
       controller.add(const AgentTodoUpdate([
-        TodoItem('t1', 'Review LIN-412 repro steps', TodoStatus.completed),
-        TodoItem('t2', 'Draft fix plan for LIN-418', TodoStatus.inProgress),
-        TodoItem('t3', 'Ping design on LIN-421', TodoStatus.pending),
+        TodoItem('t1', 'Correlate transcript with spinner evidence', TodoStatus.completed),
+        TodoItem('t2', 'Assemble GitHub-ready issue payload', TodoStatus.inProgress),
+        TodoItem('t3', 'Submit issue for engineering review', TodoStatus.pending),
       ]));
 
-      const tail =
-          'Found three open issues. Drafting a fix plan for LIN-418 now.';
-      for (final tok in _tokenize(tail)) {
-        if (_cancelled) return;
-        await Future.delayed(const Duration(milliseconds: 380));
-        controller.add(AgentToken(tok));
-      }
+      controller.add(const AgentToolCall(
+        'generate_bug_report',
+        {'target': 'github_issue'},
+      ));
+      await _wait(520);
+      controller.add(const AgentToolResult(
+        'generate_bug_report',
+        'Structured report assembled with transcript, trace, repro steps, and 5-second spinner evidence.',
+      ));
 
-      if (_cancelled) return;
+      await _emitTokens(
+        'The issue is isolated. I found a seat lock timeout and built the GitHub issue body for engineering. '
+        'Tap Submit to open the issue flow.',
+        controller,
+      );
       controller.add(const AgentFinished(
-        'Found 3 open Linear issues. Starting on LIN-418.',
+        'The GitHub issue draft is ready with transcript, trace, and evidence.',
       ));
     } catch (e, st) {
       controller.addError(e, st);
@@ -67,11 +103,57 @@ class MockAgentService implements AgentService {
     }
   }
 
+  Future<void> _driveSubmission(StreamController<AgentEvent> controller) async {
+    try {
+      controller.add(const AgentThinking(activeTodo: 'creating GitHub issue'));
+      await _emitTokens(
+        'Submitting the repro package directly to GitHub Issues now.',
+        controller,
+      );
+      controller.add(const AgentToolCall(
+        'create_github_issue',
+        {'repo': 'demo/reliability-lab', 'labels': ['bug', 'demo', 'seat-lock']},
+      ));
+      await _wait(600);
+      controller.add(const AgentToolResult(
+        'create_github_issue',
+        '#142',
+      ));
+      await _emitTokens(
+        'Bug report submitted successfully. Sent to GitHub Issues as number 142.',
+        controller,
+      );
+      controller.add(const AgentFinished(
+        'Bug report submitted successfully. Sent to GitHub Issues as #142.',
+      ));
+    } catch (e, st) {
+      controller.addError(e, st);
+    } finally {
+      await controller.close();
+    }
+  }
+
+  Future<void> _emitTokens(
+    String text,
+    StreamController<AgentEvent> controller,
+  ) async {
+    for (final token in _tokenize(text)) {
+      if (_cancelled) return;
+      await _wait(110);
+      controller.add(AgentToken(token));
+    }
+  }
+
+  Future<void> _wait(int milliseconds) async {
+    if (_cancelled) return;
+    await Future.delayed(Duration(milliseconds: milliseconds));
+  }
+
   Iterable<String> _tokenize(String text) sync* {
     final parts = text.split(RegExp(r'(?<=\s)'));
-    for (final p in parts) {
-      if (p.isEmpty) continue;
-      yield p;
+    for (final part in parts) {
+      if (part.isEmpty) continue;
+      yield part;
     }
   }
 
