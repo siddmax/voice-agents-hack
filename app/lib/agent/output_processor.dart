@@ -400,3 +400,88 @@ class OutputProcessor {
     return calls.first;
   }
 }
+
+/// Schema validation against the tool's declared `inputSchema`. Catches
+/// mismatches the type-coercer can't fix (missing required fields, value
+/// outside enum, wrong type that can't be coerced). Returns a string the
+/// model can read on retry, or null when args validate clean.
+String? validateArgsAgainstSchema({
+  required String toolName,
+  required Map<String, dynamic> args,
+  required List<Map<String, dynamic>> tools,
+}) {
+  final tool = _findTool(tools, toolName);
+  if (tool == null) return 'unknown tool "$toolName"';
+  final schema = tool['inputSchema'];
+  if (schema is! Map) return null;
+  final props = schema['properties'];
+  final required = schema['required'];
+
+  final errors = <String>[];
+
+  // Missing required.
+  if (required is List) {
+    for (final r in required) {
+      if (r is String && !args.containsKey(r)) {
+        errors.add('missing required arg "$r"');
+      }
+    }
+  }
+
+  // Per-arg type + enum check.
+  if (props is Map) {
+    for (final entry in args.entries) {
+      final fieldName = entry.key;
+      final value = entry.value;
+      final fieldSchema = props[fieldName];
+      if (fieldSchema is! Map) continue;
+
+      final type = fieldSchema['type'];
+      if (type is String) {
+        final ok = _matchesType(value, type);
+        if (!ok) {
+          errors.add('"$fieldName" expected $type, got ${_typeOf(value)}');
+        }
+      }
+
+      final enumValues = fieldSchema['enum'];
+      if (enumValues is List && enumValues.isNotEmpty &&
+          !enumValues.contains(value)) {
+        errors.add('"$fieldName"=$value not in enum $enumValues');
+      }
+    }
+  }
+
+  return errors.isEmpty ? null : errors.join('; ');
+}
+
+bool _matchesType(Object? v, String type) {
+  switch (type) {
+    case 'string':
+      return v is String;
+    case 'integer':
+      return v is int;
+    case 'number':
+      return v is num;
+    case 'boolean':
+      return v is bool;
+    case 'array':
+      return v is List;
+    case 'object':
+      return v is Map;
+    case 'null':
+      return v == null;
+  }
+  return true; // unknown type — don't reject.
+}
+
+String _typeOf(Object? v) {
+  if (v == null) return 'null';
+  if (v is bool) return 'boolean';
+  if (v is int) return 'integer';
+  if (v is num) return 'number';
+  if (v is String) return 'string';
+  if (v is List) return 'array';
+  if (v is Map) return 'object';
+  return v.runtimeType.toString();
+}

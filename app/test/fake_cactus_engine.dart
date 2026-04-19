@@ -23,8 +23,22 @@ class FakeCactusEngine implements CactusEngine {
     List<Map<String, dynamic>>? tools,
     int maxTokens = 512,
     double temperature = 0.2,
+    bool forceTools = false,
   }) async =>
       '{"success":true,"response":"","function_calls":[]}';
+
+  @override
+  Future<List<Map<String, dynamic>>> completeToolCalls({
+    required List<Map<String, dynamic>> messages,
+    required List<Map<String, dynamic>> tools,
+    int maxTokens = 512,
+    double temperature = 0.2,
+    String? query,
+    bool forceTools = true,
+  }) async {
+    if (_i >= jsonResponses.length) return const [];
+    return [jsonResponses[_i++]];
+  }
 
   @override
   Future<Map<String, dynamic>> completeJson({
@@ -49,6 +63,7 @@ class FakeCactusEngine implements CactusEngine {
     int maxTokens = 512,
     double temperature = 0.2,
     String? query,
+    bool forceTools = true,
   }) async {
     if (_i >= jsonResponses.length) return null;
     return jsonResponses[_i++];

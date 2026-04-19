@@ -87,6 +87,7 @@ class CactusEngine {
     List<Map<String, dynamic>>? tools,
     int maxTokens = 512,
     double temperature = 0.2,
+    bool forceTools = false,
   }) async {
     _checkOpen();
     // Serialize requests — cactus is single-threaded for inference and the
@@ -103,6 +104,10 @@ class CactusEngine {
     }
     try {
       final reply = ReceivePort();
+      // force_tools is cactus's equivalent of Anthropic's tool_choice="any":
+      // when true, the constrainer biases the model to MUST emit a tool call
+      // (no text-only fallback). Verified active via cactus_complete.cpp's
+      // setup_tool_constraints(handle, tools, force_tools, temperature).
       _requests.send(_CompleteReq(
         reply: reply.sendPort,
         messagesJson: jsonEncode(messages),
@@ -110,6 +115,7 @@ class CactusEngine {
           'temperature': temperature,
           'max_tokens': maxTokens,
           'top_p': 0.95,
+          if (forceTools) 'force_tools': true,
         }),
         toolsJson: tools == null ? null : jsonEncode(tools),
       ));
@@ -143,42 +149,70 @@ class CactusEngine {
   /// DSL into that JSON shape internally. Reading `parsed['name']` at the
   /// top level (the old code) always returned null because the call lives
   /// nested inside `function_calls`.
-  Future<Map<String, dynamic>?> completeToolCall({
+  /// Returns ALL parsed function calls in cactus's response wrapper, in
+  /// order, each in canonical {name, arguments} shape with OutputProcessor
+  /// already applied. Empty list if the model produced text only.
+  ///
+  /// [forceTools] (default true) enables cactus's tool_choice="any"
+  /// equivalent — the constrainer biases the model to MUST emit a tool
+  /// call. Set false for the planner where text fallback is acceptable.
+  Future<List<Map<String, dynamic>>> completeToolCalls({
     required List<Map<String, dynamic>> messages,
     required List<Map<String, dynamic>> tools,
     int maxTokens = 512,
     double temperature = 0.2,
     String? query,
+    bool forceTools = true,
   }) async {
     final raw = await completeRaw(
       messages: messages,
       tools: tools,
       maxTokens: maxTokens,
       temperature: temperature,
+      forceTools: forceTools,
     );
     final wrapper = _tryParseJson(raw);
     if (wrapper == null) {
       if (looksLikeRefusal(raw)) {
         throw JsonRetryExhausted(raw, 'model refused', 1);
       }
-      return null;
+      return const [];
     }
     final calls = wrapper['function_calls'];
-    if (calls is List && calls.isNotEmpty) {
-      final first = calls.first;
-      if (first is Map) {
-        final call = first.cast<String, dynamic>();
-        if (call['name'] is String && call['arguments'] is Map) {
-          return OutputProcessor.process(
-            call: call,
-            tools: tools,
-            query: query,
-          );
-        }
+    if (calls is! List) return const [];
+    final out = <Map<String, dynamic>>[];
+    for (final c in calls) {
+      if (c is! Map) continue;
+      final call = c.cast<String, dynamic>();
+      if (call['name'] is String && call['arguments'] is Map) {
+        out.add(OutputProcessor.process(
+          call: call,
+          tools: tools,
+          query: query,
+        ));
       }
     }
-    // No tool call — model returned text. Caller decides what to do.
-    return null;
+    return out;
+  }
+
+  /// Convenience: first call from completeToolCalls or null if empty.
+  Future<Map<String, dynamic>?> completeToolCall({
+    required List<Map<String, dynamic>> messages,
+    required List<Map<String, dynamic>> tools,
+    int maxTokens = 512,
+    double temperature = 0.2,
+    String? query,
+    bool forceTools = true,
+  }) async {
+    final calls = await completeToolCalls(
+      messages: messages,
+      tools: tools,
+      maxTokens: maxTokens,
+      temperature: temperature,
+      query: query,
+      forceTools: forceTools,
+    );
+    return calls.isEmpty ? null : calls.first;
   }
 
   /// Free-form JSON output (no tools forced). Used by the planner when we

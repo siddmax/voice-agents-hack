@@ -4,6 +4,7 @@ import 'dart:convert';
 import '../cactus/engine.dart';
 import 'agent_service.dart';
 import 'compaction.dart';
+import 'output_processor.dart' show validateArgsAgainstSchema;
 import 'memory.dart';
 import 'memory_tools.dart';
 import 'prompt_assembler.dart';
@@ -185,86 +186,101 @@ class AgentLoop implements AgentService {
 
       await _maybeCompact();
       yield AgentThinking(activeTodo: todos.active?.content);
-      final call = await _nextCall(reminder: reminder);
-      if (call == null) {
+      final calls = await _nextCalls(reminder: reminder);
+      if (calls.isEmpty) {
         yield const AgentFinished('Model returned no tool call.');
         await _logSession(userInput, 'no tool call');
         return;
       }
-      // Tolerate Gemma's JSON shape drift: the 4B model sometimes omits the
-      // 'name' field, wraps the call in {tool_call: {...}} or {function: {...}},
-      // or returns just the args. _extractCall tries the common shapes; if
-      // none works we treat the turn as a parse failure and ask for a retry.
-      final extracted = _extractCall(call);
-      if (extracted == null) {
-        _history.add({
-          'role': 'system',
-          'content':
-              '[parse-guard] last response had no usable tool name. Reply with a single JSON object: {"name": "<tool>", "arguments": {...}}.',
-        });
-        continue;
-      }
-      final name = extracted.$1;
-      final args = extracted.$2;
 
-      final key = _canonicalKey(name, args);
-      _recentToolKeys.add(key);
-      if (_recentToolKeys.length > 5) {
-        _recentToolKeys.removeAt(0);
-      }
-      if (_isStuckLoop()) {
-        _history.add({
-          'role': 'system',
-          'content':
-              '[loop-guard] the last 3 tool calls were identical. Replan: either pick a different tool, mark the current todo completed, or call finish.',
-        });
-        _recentToolKeys.clear();
-        continue;
-      }
+      // Gap 3: execute every function_call cactus parsed, not just the first.
+      // Gemma 4 emits multi-call turns ("set timer AND text Alice") in one
+      // wrapped response — silently dropping calls[1..] loses user intent.
+      // Stop early on finish / request_user_input / loop-guard trip.
+      var endRun = false;
+      for (final rawCall in calls) {
+        if (_cancelled) return;
 
-      if (!_gateSkipTools.contains(name) &&
-          !_memoryToolPattern.hasMatch(name)) {
-        final availableToolNames = tools.all.map((t) => t.name).toList();
-        if (!_semanticGate.check(
-          toolName: name,
-          query: _latestUserInput,
-          availableTools: availableToolNames,
-        )) {
+        final extracted = _extractCall(rawCall);
+        if (extracted == null) {
           _history.add({
             'role': 'system',
             'content':
-                '[semantic-gate] "$name" does not seem to match the query. Pick a different tool or call finish.',
+                '[parse-guard] last response had no usable tool name. Reply with: {"name": "<tool>", "arguments": {...}}.',
           });
           continue;
         }
-      }
+        final name = extracted.$1;
+        final args = extracted.$2;
 
-      yield AgentToolCall(name, args);
-      final raw = await tools.call(name, args);
-      final rawStr = jsonEncode(raw);
-      final compact = assembler.compactToolResult(name, rawStr);
-      final summary = compact['content'] as String;
-      _history.add({
-        'role': 'tool',
-        'name': name,
-        'content': summary,
-      });
-      yield AgentToolResult(name, _shortSummary(summary));
+        // Gap 4: schema-validate args before executing. On fail, surface the
+        // exact mismatch back to the model so the next turn can fix it.
+        final schemaError = validateArgsAgainstSchema(
+          toolName: name, args: args, tools: tools.toSchemas(),
+        );
+        if (schemaError != null) {
+          _history.add({
+            'role': 'system',
+            'content':
+                '[schema-guard] tool "$name" args invalid: $schemaError. Retry with corrected args.',
+          });
+          yield AgentError('schema: $name args invalid: $schemaError');
+          continue;
+        }
 
-      if (name == 'write_todos') {
-        yield AgentTodoUpdate(todos.items);
+        final key = _canonicalKey(name, args);
+        _recentToolKeys.add(key);
+        if (_recentToolKeys.length > 5) _recentToolKeys.removeAt(0);
+        if (_isStuckLoop()) {
+          _history.add({
+            'role': 'system',
+            'content':
+                '[loop-guard] the last 3 tool calls were identical. Replan: pick a different tool, mark the current todo completed, or call finish.',
+          });
+          _recentToolKeys.clear();
+          break;
+        }
+
+        if (!_gateSkipTools.contains(name) &&
+            !_memoryToolPattern.hasMatch(name)) {
+          final availableToolNames = tools.all.map((t) => t.name).toList();
+          if (!_semanticGate.check(
+            toolName: name,
+            query: _latestUserInput,
+            availableTools: availableToolNames,
+          )) {
+            _history.add({
+              'role': 'system',
+              'content':
+                  '[semantic-gate] "$name" does not seem to match the query. Pick a different tool or call finish.',
+            });
+            continue;
+          }
+        }
+
+        yield AgentToolCall(name, args);
+        final raw = await tools.call(name, args);
+        final rawStr = jsonEncode(raw);
+        final compact = assembler.compactToolResult(name, rawStr);
+        final summary = compact['content'] as String;
+        _history.add({'role': 'tool', 'name': name, 'content': summary});
+        yield AgentToolResult(name, _shortSummary(summary));
+
+        if (name == 'write_todos') yield AgentTodoUpdate(todos.items);
+        if (name == 'finish') {
+          final sum = (args['summary'] as String?) ?? '';
+          yield AgentFinished(sum);
+          await _logSession(userInput, 'finished: $sum');
+          return;
+        }
+        if (name == 'request_user_input') {
+          final q = (args['question'] as String?) ?? '';
+          yield AgentToolResult('request_user_input', q);
+          endRun = true;
+          break;
+        }
       }
-      if (name == 'finish') {
-        final sum = (args['summary'] as String?) ?? '';
-        yield AgentFinished(sum);
-        await _logSession(userInput, 'finished: $sum');
-        return;
-      }
-      if (name == 'request_user_input') {
-        final q = (args['question'] as String?) ?? '';
-        yield AgentToolResult('request_user_input', q);
-        return;
-      }
+      if (endRun) return;
     }
 
     yield const AgentFinished('Step limit reached.');
@@ -330,20 +346,35 @@ class AgentLoop implements AgentService {
     }
   }
 
-  Future<Map<String, dynamic>?> _nextCall({String? reminder}) async {
-    final messages = assembler.build(history: _history, reminder: reminder);
-    try {
-      // Cactus parses Gemma 4's <|tool_call>...<tool_call|> DSL into a
-      // canonical {name, arguments} object inside the response wrapper —
-      // completeToolCall reaches in and returns it directly. This is the
-      // structured-output path; no JSON-shape coaxing of the model needed.
-      return await engine.completeToolCall(
-        messages: messages,
-        tools: tools.toSchemas(),
-      );
-    } catch (_) {
-      return null;
+  /// Returns ALL function calls cactus parsed for this turn. Retries once
+  /// with a sharpening reminder if the first call comes back empty —
+  /// gives the model a second chance with force_tools=true before the
+  /// loop bails to AgentFinished.
+  Future<List<Map<String, dynamic>>> _nextCalls({String? reminder}) async {
+    Future<List<Map<String, dynamic>>> attempt(String? r) async {
+      final messages = assembler.build(history: _history, reminder: r);
+      try {
+        return await engine.completeToolCalls(
+          messages: messages,
+          tools: tools.toSchemas(),
+          forceTools: true,
+        );
+      } catch (_) {
+        return const [];
+      }
     }
+
+    final first = await attempt(reminder);
+    if (first.isNotEmpty) return first;
+
+    // Gap 2: empty result on the first try means the constrainer either
+    // didn't fire or the model emitted text only. Push the reminder
+    // harder and try once more before giving up.
+    return attempt(
+      'You MUST emit a tool call this turn. Pick from the AVAILABLE TOOLS '
+      'list above. Do not respond with text. Format: {"name": "<tool>", '
+      '"arguments": {...}}.${reminder == null ? '' : ' $reminder'}',
+    );
   }
 
   /// Pull (name, args) out of whatever shape the model emitted. Returns
